@@ -1,0 +1,67 @@
+# ============ LLM 配置 ============
+llm:
+  provider: "openai"          # openai / anthropic / qwen / wenxin
+  model: "gpt-4o"
+  api_key: "${OPENAI_API_KEY}"
+  base_url: "${OPENAI_BASE_URL}"
+  max_tokens: 2000
+  temperature: 0.3
+
+# ============ 新闻采集配置 ============
+news:
+  sources:
+    - "cailianshe"      # 财联社
+    - "sina_finance"    # 新浪财经
+    - "eastmoney"       # 东方财富
+    - "yicai"          # 第一财经
+    - "xinhua_finance" # 新华社财经
+    - "cctv_finance"   # 央视财经
+    - "reuters"        # 路透社
+    - "bloomberg"      # 彭博社
+    - "ft"             # 金融时报
+    - "cnbc"          # CNBC
+    - "marketwatch"    # MarketWatch
+    - "wsj"           # 华尔街日报
+  fetch_interval: 300       # 抓取间隔（秒）
+  timeout: 10              # 请求超时（秒）
+  retry_times: 3           # 重试次数
+  deduplication:
+    enabled: true
+    similarity_threshold: 0.85
+
+# ============ AI 分析配置 ============
+analysis:
+  expert_role: "你是一位拥有20年投资经验的资深宏观经济分析师，擅长从新闻事件中捕捉市场信号，分析对A股、港股及全球市场的影响。"
+  max_analysis_length: 500      # 分析文本最大字数
+  rating_levels: 5              # 评级档位（1-5）
+  enable_multilingual: true     # 是否支持中英文双语
+
+# ============ 可视化配置 ============
+visualizer:
+  theme: "light"               # light / dark
+  width: 1200
+  height: 1600
+  output_dir: "./output/images"
+  logo_path: "./visualizer/assets/logo.png"
+  font:
+    chinese: "./visualizer/assets/fonts/NotoSansSC-Regular.ttf"
+    english: "./visualizer/assets/fonts/Inter-Regular.ttf"
+
+# ============ 数据库配置 ============
+database:
+  url: "${DATABASE_URL}"
+  echo: false                   # 是否打印 SQL 语句
+
+# ============ API 服务配置 ============
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins:
+    - "*"
+
+# ============ 日志配置 ============
+logging:
+  level: "INFO"
+  dir: "./logs"
+  rotation: "10 MB"
+  retention: "30 days"

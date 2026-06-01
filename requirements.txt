@@ -1,0 +1,45 @@
+# 核心依赖
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# LLM
+openai>=1.0.0
+httpx>=0.24.0
+
+# 新闻抓取
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+feedparser>=6.0.0
+
+# 图片生成
+Pillow>=10.0.0
+matplotlib>=3.8.0
+fonttools>=4.40.0
+
+# Web 框架
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic-settings>=2.0.0
+
+# 数据库
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+# psycopg2-binary>=2.9.0  # PostgreSQL（可选）
+
+# 日志
+loguru>=0.7.0
+
+# 工具
+pyyaml>=6.0
+tenacity>=8.2.0
+schedule>=1.2.0
+
+# 测试
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+
+# 可选：任务队列（第二阶段）
+# celery>=5.3.0
+# redis>=5.0.0

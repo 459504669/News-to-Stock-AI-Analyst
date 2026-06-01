@@ -10,9 +10,9 @@ from loguru import logger
 from ..ai_analyst.rating_system import Rating
 
 
-# 默认字体路径（需用户自行放入字体文件）
+# 默认字体路径（Noto Sans SC 变量字体同时包含中英文字符）
 DEFAULT_FONT_ZH = Path(__file__).parent / "assets" / "fonts" / "NotoSansSC-Regular.ttf"
-DEFAULT_FONT_EN = Path(__file__).parent / "assets" / "fonts" / "Inter-Regular.ttf"
+DEFAULT_FONT_EN = DEFAULT_FONT_ZH  # NotoSansSC 也包含完整拉丁字符
 
 # 图片尺寸
 WIDTH = 1200

@@ -1,148 +1,391 @@
 """
-财联社新闻采集器
-RSS: https://www.cls.cn/telegraph
+批量新闻采集器集合 - 纯 requests + BeautifulSoup 版本
+直接访问权威新闻网站提取新闻列表，不依赖浏览器自动化
 """
-import feedparser
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
+from urllib.parse import urljoin
 from loguru import logger
-from .base import BaseCollector, NewsItem
+from bs4 import BeautifulSoup
+from ..base import BaseCollector, NewsItem
 
 
-class CailiansheCollector(BaseCollector):
-    """财联社电报采集器"""
+# ==================== 通用工具 ====================
 
-    RSS_URL = "https://www.cls.cn/telegraph"
+NAV_BLACKLIST = {
+    "首页", "关于", "关于我们", "联系我们", "登录", "注册",
+    "搜索", "更多", "下一页", "上一页", "频道", "导航", "订阅",
+    "分享", "收藏", "推荐", "热榜", "排行", "排行榜", "点击",
+    "评论", "转发", "点赞", "阅读", "home", "about", "contact",
+    "login", "register", "search", "more", "next", "previous",
+    "nav", "channel", "subscribe", "share", "collect", "top",
+    "hot", "rank", "click", "comment", "repost", "like",
+    "回到顶部", "返回首页", "意见反馈", "免责声明", "隐私政策",
+    "使用条款", "帮助中心", "客户端", "APP下载", "二维码",
+}
 
-    def fetch(self) -> list[NewsItem]:
-        try:
-            feed = feedparser.parse(self.RSS_URL)
-            items = []
-            for entry in feed.entries[:20]:
-                published = datetime.now()
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published = datetime(*entry.published_parsed[:6])
-                items.append(NewsItem(
-                    title=entry.get("title", ""),
-                    summary=entry.get("summary", "")[:200],
-                    content=entry.get("summary", ""),
-                    source="财联社",
-                    url=entry.get("link", ""),
-                    published_at=published,
-                ))
-            logger.info(f"财联社抓取完成，共 {len(items)} 条")
-            return items
-        except Exception as e:
-            logger.error(f"财联社抓取失败: {e}")
-            return []
-
-
-class SinaFinanceCollector(BaseCollector):
-    """新浪财经新闻采集器"""
-
-    RSS_URL = "https://rss.sina.com.cn/finance/forex.xml"
-
-    def fetch(self) -> list[NewsItem]:
-        try:
-            feed = feedparser.parse(self.RSS_URL)
-            items = []
-            for entry in feed.entries[:20]:
-                published = datetime.now()
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published = datetime(*entry.published_parsed[:6])
-                items.append(NewsItem(
-                    title=entry.get("title", ""),
-                    summary=entry.get("summary", "")[:200],
-                    content=entry.get("summary", ""),
-                    source="新浪财经",
-                    url=entry.get("link", ""),
-                    published_at=published,
-                ))
-            logger.info(f"新浪财经抓取完成，共 {len(items)} 条")
-            return items
-        except Exception as e:
-            logger.error(f"新浪财经抓取失败: {e}")
-            return []
+FINANCE_KEYWORDS = [
+    "股", "市", "涨", "跌", "A股", "港股", "美股", "指数", "大盘", "板块", "行情",
+    "经济", "金融", "银行", "保险", "地产", "科技", "半导体", "芯片", "AI", "人工智能",
+    "政策", "央行", "美联储", "加息", "降息", "降准", "货币政策", "财政政策",
+    "GDP", "CPI", "PMI", "通胀", "通缩", "通膨", "衰退", "复苏",
+    "贸易", "关税", "人民币", "美元", "汇率", "贬值", "升值",
+    "原油", "黄金", "期货", "期权", "比特币", "加密货币", "数字货币",
+    "财报", "业绩", "营收", "利润", "净利润", "分红", "股息",
+    "收购", "并购", "上市", "IPO", "退市", "停牌", "复牌", "增发",
+    "中概", "外资", "北向", "南向", "QFII", "北交所", "科创板", "创业板",
+    "恒大", "融创", "万科", "碧桂园", "保利", "招商蛇口",
+    "阿里", "腾讯", "字节", "美团", "拼多多", "京东", "百度", "小米", "蔚来", "理想", "小鹏",
+    "比亚迪", "宁德时代", "隆基", "通威", "海油", "石油", "石化", "能源", "中海油",
+    "茅台", "五粮液", "泸州老窖", "汾酒", "洋河", "古井贡",
+    "银行", "券商", "保险", "信托", "基金", "公募", "私募", "资管",
+    "光伏", "风电", "新能源", "储能", "锂电", "氢能", "电网",
+    "消费", "零售", "餐饮", "旅游", "酒店", "航空", "快递", "物流",
+    "医药", "医疗", "生物", "疫苗", "创新药", "CXO", "CRO",
+    "汽车", "造车", "新能源", "电动", "智能", "自动驾驶",
+    "房地产", "楼市", "房价", "土拍", "限购", "房贷利率",
+    "债券", "国债", "地方债", "信用债", "收益率", "违约",
+    "风险", "危机", "暴雷", "逾期", "重组", "破产", "清算",
+    "会议", "公报", "决议", "发布会", "讲话", "表态",
+]
 
 
-class EastmoneyCollector(BaseCollector):
-    """东方财富新闻采集器"""
-
-    RSS_URL = "https://feed.eastmoney.com/news/cat_1.xml"
-
-    def fetch(self) -> list[NewsItem]:
-        try:
-            feed = feedparser.parse(self.RSS_URL)
-            items = []
-            for entry in feed.entries[:20]:
-                published = datetime.now()
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published = datetime(*entry.published_parsed[:6])
-                items.append(NewsItem(
-                    title=entry.get("title", ""),
-                    summary=entry.get("summary", "")[:200],
-                    content=entry.get("summary", ""),
-                    source="东方财富",
-                    url=entry.get("link", ""),
-                    published_at=published,
-                ))
-            logger.info(f"东方财富抓取完成，共 {len(items)} 条")
-            return items
-        except Exception as e:
-            logger.error(f"东方财富抓取失败: {e}")
-            return []
+def _is_nav_link(title: str, href: str) -> bool:
+    """判断是否是导航/广告链接"""
+    title_lower = title.lower().strip()
+    if len(title_lower) < 2:
+        return True
+    for kw in NAV_BLACKLIST:
+        if kw in title_lower:
+            return True
+    return False
 
 
-class ReutersCollector(BaseCollector):
-    """路透社新闻采集器"""
+def _looks_like_news(title: str, href: str) -> bool:
+    """判断标题+链接是否像新闻"""
+    url_indicators = [
+        "news", "article", "detail", "content", "post", "story",
+        "2025", "2026", "2024", "roll", "a/", "telegraph",
+        "finance", "stock", "company", "economy", "business",
+        "html", "htm", "shtml", "php", "jsp", "aspx",
+    ]
+    has_url_indicator = any(kw in href.lower() for kw in url_indicators)
+    has_finance_kw = any(kw in title for kw in FINANCE_KEYWORDS)
 
-    RSS_URL = "https://feeds.reuters.com/reuters/businessNews"
+    exclude_patterns = [
+        r'^\d+$',
+        r'^\d{4}-\d{2}-\d{2}$',
+        r'^[\d\s\.]+$',
+    ]
+    for pattern in exclude_patterns:
+        if re.match(pattern, title.strip()):
+            return False
 
-    def fetch(self) -> list[NewsItem]:
-        try:
-            feed = feedparser.parse(self.RSS_URL)
-            items = []
-            for entry in feed.entries[:20]:
-                published = datetime.now()
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published = datetime(*entry.published_parsed[:6])
-                items.append(NewsItem(
-                    title=entry.get("title", ""),
-                    summary=entry.get("summary", "")[:200],
-                    content=entry.get("summary", ""),
-                    source="路透社",
-                    url=entry.get("link", ""),
-                    published_at=published,
-                ))
-            logger.info(f"路透社抓取完成，共 {len(items)} 条")
-            return items
-        except Exception as e:
-            logger.error(f"路透社抓取失败: {e}")
-            return []
+    return has_url_indicator or has_finance_kw
 
 
-class BloombergCollector(BaseCollector):
-    """彭博社新闻采集器（通过 RSS）"""
+def _fix_url(href: str, base_url: str) -> str:
+    """修复相对链接为绝对链接"""
+    if not href or href.startswith("javascript") or href == "#":
+        return ""
+    if not href.startswith("http"):
+        href = urljoin(base_url, href)
+    return href
 
-    RSS_URL = "https://www.bloomberg.com/feed/podcast/etf-iq.xml"
+
+def _safe_parse_html(resp) -> BeautifulSoup:
+    """安全解析 HTML，自动处理编码"""
+    try:
+        resp.encoding = resp.apparent_encoding or "utf-8"
+    except Exception:
+        resp.encoding = "utf-8"
+    text = resp.text
+    # 优先 lxml，fallback html.parser
+    try:
+        return BeautifulSoup(text, "lxml")
+    except Exception:
+        return BeautifulSoup(text, "html.parser")
+
+
+# ==================== 通用采集器基类 ====================
+
+class HttpCollector(BaseCollector):
+    """
+    基于 HTTP 请求的采集器基类
+    使用 requests + BeautifulSoup 提取新闻
+    """
+    URL = ""
+    SELECTORS = []
+    SOURCE_NAME = ""
+    MAX_ITEMS = 15
+    REFERER = ""
 
     def fetch(self) -> list[NewsItem]:
+        """抓取新闻入口"""
         try:
-            feed = feedparser.parse(self.RSS_URL)
-            items = []
-            for entry in feed.entries[:10]:
-                published = datetime.now()
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    published = datetime(*entry.published_parsed[:6])
-                items.append(NewsItem(
-                    title=entry.get("title", ""),
-                    summary=entry.get("summary", "")[:200],
-                    content=entry.get("summary", ""),
-                    source="彭博社",
-                    url=entry.get("link", ""),
-                    published_at=published,
-                ))
-            logger.info(f"彭博社抓取完成，共 {len(items)} 条")
+            items = self._fetch()
+            logger.info(f"{self.SOURCE_NAME}: 抓取 {len(items)} 条")
             return items
         except Exception as e:
-            logger.error(f"彭博社抓取失败: {e}")
+            logger.warning(f"{self.SOURCE_NAME}: 抓取失败: {e}")
             return []
+
+    def _fetch(self) -> list[NewsItem]:
+        """实际抓取逻辑"""
+        headers = {}
+        if self.REFERER:
+            headers["Referer"] = self.REFERER
+
+        resp = self._get(self.URL, headers=headers)
+        soup = _safe_parse_html(resp)
+
+        items = []
+
+        # 1. 尝试硬编码选择器
+        for selector in self.SELECTORS:
+            elements = soup.select(selector)
+            if elements:
+                for elem in elements[:self.MAX_ITEMS * 2]:
+                    link = elem if elem.name == "a" else elem.find("a")
+                    if not link:
+                        continue
+                    title = link.get_text(strip=True)
+                    href = link.get("href", "")
+                    href = _fix_url(href, self.URL)
+                    if title and href and self._validate_item(title, href):
+                        items.append(self._create_item(title, href))
+                if items:
+                    break
+
+        # 2. 通用 fallback
+        if not items:
+            items = self._generic_extract(soup)
+
+        return items[:self.MAX_ITEMS]
+
+    def _generic_extract(self, soup: BeautifulSoup) -> list[NewsItem]:
+        """通用提取：遍历所有链接，智能过滤"""
+        items = []
+        seen = set()
+
+        for link in soup.find_all("a"):
+            title = link.get_text(strip=True)
+            href = link.get("href", "")
+            href = _fix_url(href, self.URL)
+
+            if not title or not href:
+                continue
+            if len(title) < 8 or len(title) > 120:
+                continue
+            if _is_nav_link(title, href):
+                continue
+            if not _looks_like_news(title, href):
+                continue
+
+            key = title[:40]
+            if key in seen:
+                continue
+            seen.add(key)
+
+            items.append(self._create_item(title, href))
+
+            if len(items) >= self.MAX_ITEMS:
+                break
+
+        return items
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """验证单条新闻是否有效"""
+        if not title or not href:
+            return False
+        if len(title) < 8 or len(title) > 120:
+            return False
+        if _is_nav_link(title, href):
+            return False
+        return True
+
+    def _create_item(self, title: str, href: str) -> NewsItem:
+        """创建 NewsItem"""
+        return NewsItem(
+            title=title,
+            summary=title[:300],
+            content=title,
+            source=self.SOURCE_NAME,
+            url=href,
+            published_at=datetime.now(),
+        )
+
+
+# ==================== 具体采集器 ====================
+
+class SinaFinanceCollector(HttpCollector):
+    """新浪财经 - 滚动新闻"""
+    URL = "https://finance.sina.com.cn/roll/index.d.html"
+    SELECTORS = [
+        "#fin_tabs0_c0 li a",
+        ".fin_tabs0_c0 a",
+        "ul.list_009 li a",
+        ".ty-card-wrapper a",
+        "[data-sudaclick='news'] a",
+        ".news-item a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "新浪财经"
+    MAX_ITEMS = 20
+    REFERER = "https://finance.sina.com.cn/"
+
+
+class EastmoneyCollector(HttpCollector):
+    """东方财富 - 财经要闻"""
+    URL = "https://finance.eastmoney.com/a/czqyw.html"
+    SELECTORS = [
+        ".title a",
+        ".item a",
+        ".news-item a",
+        ".text a",
+        "h3 a",
+        ".article-list a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "东方财富"
+    MAX_ITEMS = 20
+    REFERER = "https://finance.eastmoney.com/"
+
+
+class HexunCollector(HttpCollector):
+    """和讯网 - 财经新闻"""
+    URL = "https://www.hexun.com/"
+    SELECTORS = [
+        ".news-item a",
+        ".item a",
+        ".title a",
+        ".list a",
+        "h3 a",
+        "h2 a",
+        ".con a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "和讯网"
+    MAX_ITEMS = 20
+    REFERER = "https://www.hexun.com/"
+
+
+class YicaiCollector(HttpCollector):
+    """第一财经"""
+    URL = "https://www.yicai.com/"
+    SELECTORS = [
+        ".m-list a",
+        ".f-ff1 a",
+        ".news-list a",
+        ".item a",
+        "h2 a",
+        "h3 a",
+        ".txt a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "第一财经"
+    MAX_ITEMS = 15
+    REFERER = "https://www.yicai.com/"
+
+
+class STCNCollector(HttpCollector):
+    """证券时报"""
+    URL = "https://www.stcn.com/"
+    SELECTORS = [
+        ".news-item a",
+        ".item a",
+        ".title a",
+        ".list a",
+        "h3 a",
+        "h2 a",
+        ".con a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "证券时报"
+    MAX_ITEMS = 15
+    REFERER = "https://www.stcn.com/"
+
+
+class CailiansheCollector(HttpCollector):
+    """财联社 - 电报"""
+    URL = "https://www.cls.cn/telegraph"
+    SELECTORS = [
+        ".telegraph-content a",
+        ".content a",
+        ".telegraph-item a",
+        ".news-item a",
+        ".telegraph-list a",
+        ".item-content a",
+    ]
+    SOURCE_NAME = "财联社"
+    MAX_ITEMS = 20
+    REFERER = "https://www.cls.cn/"
+
+
+class WallstreetcnCollector(HttpCollector):
+    """华尔街见闻"""
+    URL = "https://wallstreetcn.com/news/global"
+    SELECTORS = [
+        ".article-item a",
+        ".news-item a",
+        ".item a",
+        "h2 a",
+        "h3 a",
+        ".article-card a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "华尔街见闻"
+    MAX_ITEMS = 15
+    REFERER = "https://wallstreetcn.com/"
+
+
+class Kr36Collector(HttpCollector):
+    """36氪 - 快讯"""
+    URL = "https://36kr.com/newsflashes"
+    SELECTORS = [
+        ".news-item a",
+        ".item a",
+        ".title a",
+        "h2 a",
+        "h3 a",
+        ".article-item a",
+        ".newsflash-item a",
+    ]
+    SOURCE_NAME = "36氪"
+    MAX_ITEMS = 15
+    REFERER = "https://36kr.com/"
+
+
+class CaixinCollector(HttpCollector):
+    """财新网"""
+    URL = "https://china.caixin.com/"
+    SELECTORS = [
+        ".news-item a",
+        ".item a",
+        ".title a",
+        "h2 a",
+        "h3 a",
+        ".list a",
+        ".con a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "财新网"
+    MAX_ITEMS = 15
+    REFERER = "https://china.caixin.com/"
+
+
+# ==================== 入口函数 ====================
+
+def get_all_collectors() -> list[BaseCollector]:
+    """获取所有可用的新闻采集器"""
+    return [
+        SinaFinanceCollector(),
+        EastmoneyCollector(),
+        HexunCollector(),
+        YicaiCollector(),
+        STCNCollector(),
+        CailiansheCollector(),
+        WallstreetcnCollector(),
+        Kr36Collector(),
+        CaixinCollector(),
+    ]

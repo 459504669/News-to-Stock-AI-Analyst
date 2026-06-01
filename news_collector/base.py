@@ -1,6 +1,7 @@
 """
 基础新闻采集器 - 所有采集器的抽象基类
 """
+import time
 import requests
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ class NewsItem:
 class BaseCollector(ABC):
     """采集器抽象基类"""
 
-    def __init__(self, timeout: int = 10, retry_times: int = 3):
+    def __init__(self, timeout: int = 8, retry_times: int = 2):
         self.timeout = timeout
         self.retry_times = retry_times
         self.session = requests.Session()
@@ -41,7 +42,12 @@ class BaseCollector(ABC):
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
-            )
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
         })
 
     @abstractmethod
@@ -50,16 +56,26 @@ class BaseCollector(ABC):
         pass
 
     def _get(self, url: str, **kwargs) -> requests.Response:
-        """带重试的 GET 请求"""
-        from tenacity import retry, stop_after_attempt, wait_fixed
-        @retry(stop=stop_after_attempt(self.retry_times),
-               wait=wait_fixed(2))
-        def _do_get():
-            resp = self.session.get(
-                url, timeout=self.timeout, **kwargs)
-            resp.raise_for_status()
-            return resp
-        return _do_get()
+        """带简单重试的 GET 请求"""
+        req_timeout = kwargs.pop("timeout", self.timeout)
+
+        last_err = None
+        for attempt in range(1, self.retry_times + 1):
+            try:
+                resp = self.session.get(
+                    url,
+                    timeout=req_timeout,
+                    **kwargs
+                )
+                resp.raise_for_status()
+                return resp
+            except Exception as e:
+                last_err = e
+                logger.debug(f"GET {url} attempt {attempt}/{self.retry_times} failed: {e}")
+                if attempt < self.retry_times:
+                    time.sleep(1)
+
+        raise last_err
 
     def __enter__(self):
         return self

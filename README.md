@@ -1,4 +1,4 @@
-# News-to-Stock AI Analyst 📰📈
+# News-to-Stock AI Analyst 📈
 
 > AI 驱动的实时新闻股市分析工具 —— 让新闻成为你的投资信号
 
@@ -14,6 +14,79 @@
 - 🎯 **投资方向推荐** — 给出受益板块、标的建议及风险提示
 - 🖼️ **单图输出** — 所有分析结果整合到一张美观的信息图中
 - 🔌 **API 支持** — 提供 REST API 接口供其他项目调用
+
+## 🚀 快速开始
+
+### 方式一：一键启动（推荐）
+
+双击运行即可，脚本会自动完成环境配置：
+
+**Windows:**
+```
+双击 start.bat
+```
+
+**Linux / macOS:**
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+首次运行时，脚本会自动：
+1. 检查 Python 环境
+2. 创建虚拟环境并安装依赖
+3. 创建 `.env` 配置文件并打开编辑器，提示你填入 API Key
+4. 第二次运行直接启动服务
+
+### 方式二：手动安装
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/459504669/News-to-Stock-AI-Analyst.git
+cd News-to-Stock-AI-Analyst
+
+# 2. 创建虚拟环境
+python -m venv venv
+
+# 3. 激活虚拟环境
+# Windows:
+venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
+
+# 4. 安装依赖
+pip install -r requirements.txt
+
+# 5. 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入你的 API Key（必填项见下方说明）
+
+# 6. 启动服务
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 必填配置
+
+编辑 `.env` 文件，至少配置一项 LLM API Key：
+
+| 提供商 | 环境变量 | 模型示例 |
+|--------|---------|---------|
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o` |
+| 阿里通义千问 | `QWEN_API_KEY` | `qwen-max` |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
+| 百度文心一言 | `WENXIN_API_KEY` | `ernie-bot-4` |
+
+然后在 `.env` 中设置默认提供商：
+```
+DEFAULT_LLM_PROVIDER=qwen
+DEFAULT_LLM_MODEL=qwen-max
+```
+
+### 启动成功后
+
+- 服务首页：http://localhost:8000
+- API 文档（Swagger UI）：http://localhost:8000/docs
+- 在 Swagger UI 中可以直接测试所有接口
 
 ## 🏗️ 项目架构
 
@@ -40,57 +113,13 @@ News-to-Stock-AI-Analyst/
 │   ├── models.py           # 数据库模型
 │   └── crud.py             # 数据操作
 ├── tests/                  # 单元测试
-└── scripts/                # 辅助脚本
+├── scripts/                # 辅助脚本
+├── start.bat               # Windows 一键启动
+├── start.sh                # Linux/macOS 一键启动
+├── requirements.txt         # Python 依赖
+├── config.example.yaml     # 配置文件模板
+└── .env.example            # 环境变量模板
 ```
-
-## 🚀 快速开始
-
-### 1. 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. 配置环境变量
-
-复制 `.env.example` 为 `.env`，填入你的 API Key：
-
-```bash
-cp .env.example .env
-```
-
-### 3. 初始化数据库
-
-```bash
-python scripts/init_db.py
-```
-
-### 4. 运行分析（CLI 模式）
-
-```bash
-python scripts/test_analysis.py
-```
-
-### 5. 启动 API 服务
-
-```bash
-uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-访问 http://localhost:8000/docs 查看 API 文档。
-
-## 📊 输出示例
-
-每一次分析会生成一张 **1200×1600 像素纵向长图**，包含：
-
-| 区域 | 内容 |
-|------|------|
-| 📰 标题区 | 新闻标题、来源、发布时间 |
-| ⚡ 影响评级 | 仪表盘式 1-5 星评分 |
-| 📊 详细分析 | 300-500 字 AI 深度解读 |
-| 🎯 投资方向 | 受益板块、关注标的、配置建议 |
-| ⚠️ 风险提示 | 可能的负面因素 |
-| 📱 页脚 | 项目 Logo + 生成时间 |
 
 ## 🛠️ 技术栈
 
@@ -109,68 +138,29 @@ uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 
 ### ✅ 第一阶段（MVP）
 - [x] 项目架构设计
+- [x] 基于 LLM 的核心分析引擎
+- [x] 基础图片生成功能（亮色/暗色主题）
+- [x] REST API 服务 + Swagger UI
+- [x] 一键启动脚本
 - [ ] 3-5 个主流新闻源采集器
-- [ ] 基于 GPT-4 的核心分析引擎
-- [ ] 基础图片生成功能
-- [ ] CLI 单条新闻分析命令
 
 ### 🔜 第二阶段（功能完善）
 - [ ] 更多新闻源接入（10+）
-- [ ] 多 LLM 后端支持
-- [ ] REST API 服务
 - [ ] 定时自动分析任务
+- [ ] Telegram / 微信机器人推送
 
 ### 🔮 第三阶段（高级功能）
 - [ ] Web 管理后台
-- [ ] Telegram / Discord 机器人推送
 - [ ] 分析效果回溯与评估
 - [ ] 历史数据分析优化模型
-
-## ⚙️ 配置说明
-
-编辑 `config.yaml` 自定义：
-
-```yaml
-llm:
-  provider: "openai"          # openai / anthropic / qwen / wenxin
-  model: "gpt-4o"
-  api_key: "${OPENAI_API_KEY}"
-
-news:
-  sources:
-    - "cailianshe"
-    - "sina_finance"
-    - "reuters"
-  fetch_interval: 300          # 秒
-
-visualizer:
-  theme: "light"               # light / dark
-  width: 1200
-  height: 1600
-```
-
-## 🤝 贡献指南
-
-欢迎贡献！请查看 [CONTRIBUTING.md](CONTRIBUTING.md) 了解详情。
-
-1. Fork 本仓库
-2. 创建你的特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交你的更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 打开一个 Pull Request
-
-## 📄 开源协议
-
-本项目采用 **MIT License** —— 自由使用、修改、分发。
 
 ## ⚠️ 免责声明
 
 本工具仅供学习研究使用，不构成任何投资建议。投资有风险，入市需谨慎。
 
-## 🙏 致谢
+## 📄 开源协议
 
-- OpenAI / Anthropic / 阿里云 / 百度智能云 提供 LLM 能力
-- 各财经媒体提供新闻数据源
+本项目采用 **MIT License** —— 自由使用、修改、分发。
 
 ---
 

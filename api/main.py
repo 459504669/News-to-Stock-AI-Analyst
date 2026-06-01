@@ -13,7 +13,7 @@ from database.models import Database
 from database.crud import (
     list_recent_news, list_recent_analyses,
     get_analysis_with_news, create_news, create_analysis,
-    get_news_by_url,
+    get_news_by_url, get_analysis_by_news_id,
 )
 from ai_analyst.analyzer import Analyzer
 from visualizer.generator import Visualizer
@@ -49,7 +49,6 @@ app.add_middleware(
 )
 
 # 数据库依赖
-db_instance = Database()
 def get_db():
     db = db_instance.get_session()
     try:

@@ -20,8 +20,9 @@ def deduplicate(
     对新闻列表去重，相似度 > threshold 的视为重复。
     保留时间更新的那条。
     """
+    items_list = list(items)
     seen: list[NewsItem] = []
-    for item in items:
+    for item in items_list:
         dup = False
         for s in seen:
             if similarity(item.title, s.title) >= threshold:
@@ -33,5 +34,5 @@ def deduplicate(
         if not dup:
             seen.append(item)
 
-    logger.info(f"去重完成：原始 {len(list(items))} 条 → 去重后 {len(seen)} 条")
+    logger.info(f"去重完成：原始 {len(items_list)} 条 → 去重后 {len(seen)} 条")
     return seen

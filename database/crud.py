@@ -1,7 +1,7 @@
 """
 CRUD 操作 - 数据库读写
 """
-from typing import Optional, list
+from typing import Optional
 from loguru import logger
 from sqlalchemy.orm import Session
 from .models import News, AnalysisResult

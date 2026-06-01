@@ -2,26 +2,42 @@
 FastAPI 主入口
 提供 REST API 服务
 """
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from sqlalchemy.orm import Session
 from pathlib import Path
 from . import schemas
-from ..database.models import Database
-from ..database.crud import (
+from database.models import Database
+from database.crud import (
     list_recent_news, list_recent_analyses,
     get_analysis_with_news, create_news, create_analysis,
     get_news_by_url,
 )
-from ..ai_analyst.analyzer import Analyzer
-from ..visualizer.generator import Visualizer
+from ai_analyst.analyzer import Analyzer
+from visualizer.generator import Visualizer
+
+# 数据库实例（模块级别）
+db_instance = Database()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：启动时建表，关闭时释放连接"""
+    db_instance.create_tables()
+    logger.info("数据库表已初始化")
+    yield
+    db_instance.close()
+    logger.info("数据库已关闭")
+
 
 # 初始化
 app = FastAPI(
     title="News-to-Stock AI Analyst API",
     description="AI 驱动的实时新闻股市分析工具 API",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS
@@ -150,7 +166,7 @@ def list_latest_analyses(limit: int = 20, db: Session = Depends(get_db)):
 
 @app.get("/api/image/{analysis_id}")
 def get_analysis_image(analysis_id: int, db: Session = Depends(get_db)):
-    """获取分析图片（重定向到图片路径）"""
+    """获取分析图片（返回图片文件）"""
     from fastapi.responses import FileResponse
     result = get_analysis_with_news(db, analysis_id)
     if not result or not result.get("image_path"):
@@ -159,9 +175,3 @@ def get_analysis_image(analysis_id: int, db: Session = Depends(get_db)):
     if not path.exists():
         raise HTTPException(status_code=404, detail="图片文件不存在")
     return FileResponse(path, media_type="image/png")
-
-
-@app.on_event("shutdown")
-def shutdown_event():
-    db_instance.close()
-    logger.info("数据库已关闭")

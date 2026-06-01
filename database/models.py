@@ -61,7 +61,7 @@ class AnalysisResult(Base):
 class Database:
     """数据库管理类"""
 
-    def __init__(self, url: str = "sqlite+aiosqlite:///./data/news_analyst.db"):
+    def __init__(self, url: str = "sqlite:///./data/news_analyst.db"):
         self.engine = create_engine(url, echo=False)
         self.SessionLocal = sessionmaker(
             autocommit=False, autoflush=False, bind=self.engine

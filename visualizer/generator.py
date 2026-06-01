@@ -3,11 +3,12 @@
 支持亮色/暗色主题，中英文双语
 """
 from pathlib import Path
+from typing import Optional
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import textwrap
 from loguru import logger
-from ..ai_analyst.rating_system import Rating
+from ai_analyst.rating_system import Rating
 
 
 # 默认字体路径（Noto Sans SC 变量字体同时包含中英文字符）

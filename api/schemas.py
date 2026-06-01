@@ -1,8 +1,8 @@
 """
 API 请求/响应模型（Pydantic Schema）
 """
-from pydantic import BaseModel
-from typing import Optional, list
+from pydantic import BaseModel, ConfigDict
+from typing import Optional
 from datetime import datetime
 
 
@@ -21,6 +21,7 @@ class AnalyzeRequest(BaseModel):
 
 class NewsItemOut(BaseModel):
     """新闻列表输出"""
+    model_config = ConfigDict(from_attributes=True)
     id: int
     title: str
     summary: Optional[str] = None
@@ -28,12 +29,10 @@ class NewsItemOut(BaseModel):
     url: Optional[str] = None
     published_at: Optional[datetime] = None
 
-    class Config:
-        orm_mode = True
-
 
 class AnalysisOut(BaseModel):
     """分析结果输出"""
+    model_config = ConfigDict(from_attributes=True)
     id: int
     news_id: int
     title: Optional[str] = None   # 联表字段
@@ -44,6 +43,3 @@ class AnalysisOut(BaseModel):
     recommended_stocks: list[dict]
     risks: list[str]
     image_path: Optional[str] = None
-
-    class Config:
-        orm_mode = True

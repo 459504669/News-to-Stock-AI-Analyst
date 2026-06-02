@@ -1,6 +1,13 @@
 """
 批量新闻采集器集合 - 纯 requests + BeautifulSoup 版本
 直接访问权威新闻网站提取新闻列表，不依赖浏览器自动化
+
+v0.2.5 更新：
+  - 新浪财经：换用首页，更新选择器
+  - 财联社：换用首页（电报页需JS渲染）
+  - 和讯网：换用 news.hexun.com 子站，修复 GBK 编码
+  - 华尔街见闻：DNS 可能不通，保留但降优先级
+  - 新增 IT之家(ithome.com) 科技新闻源
 """
 import re
 from datetime import datetime, timedelta
@@ -22,6 +29,7 @@ NAV_BLACKLIST = {
     "hot", "rank", "click", "comment", "repost", "like",
     "回到顶部", "返回首页", "意见反馈", "免责声明", "隐私政策",
     "使用条款", "帮助中心", "客户端", "APP下载", "二维码",
+    "广告合作", "加入我们", "招聘", "媒体报道", "友情链接",
 }
 
 FINANCE_KEYWORDS = [
@@ -47,6 +55,15 @@ FINANCE_KEYWORDS = [
     "债券", "国债", "地方债", "信用债", "收益率", "违约",
     "风险", "危机", "暴雷", "逾期", "重组", "破产", "清算",
     "会议", "公报", "决议", "发布会", "讲话", "表态",
+    # 科技/IT 相关（IT之家需要）
+    "英伟达", "NVIDIA", "AMD", "英特尔", "Intel", "高通", "台积电", "三星",
+    "苹果", "Apple", "华为", "鸿蒙", "麒麟", "iPhone", "iPad", "Mac",
+    "特斯拉", "Tesla", "马斯克", "黄仁勋", "库克",
+    "机器人", "大模型", "GPT", "ChatGPT", "OpenAI", "Anthropic", "Gemini",
+    "鸿蒙智行", "问界", "极氪", "零跑", "小米SU7", "赛力斯",
+    "WWDC", "发布", "新品", "旗舰", "处理器", "芯片", "CPU", "GPU",
+    "OLED", "折叠屏", "AI手机", "AR", "VR", "MR",
+    "自动驾驶", "FSD", "辅助驾驶",
 ]
 
 
@@ -68,6 +85,10 @@ def _looks_like_news(title: str, href: str) -> bool:
         "2025", "2026", "2024", "roll", "a/", "telegraph",
         "finance", "stock", "company", "economy", "business",
         "html", "htm", "shtml", "php", "jsp", "aspx",
+        # IT之家 URL 模式
+        "/0/", "ithome.com",
+        # 财联社 URL 模式
+        "/detail/",
     ]
     has_url_indicator = any(kw in href.lower() for kw in url_indicators)
     has_finance_kw = any(kw in title for kw in FINANCE_KEYWORDS)
@@ -93,12 +114,15 @@ def _fix_url(href: str, base_url: str) -> str:
     return href
 
 
-def _safe_parse_html(resp) -> BeautifulSoup:
+def _safe_parse_html(resp, force_encoding=None) -> BeautifulSoup:
     """安全解析 HTML，自动处理编码"""
-    try:
-        resp.encoding = resp.apparent_encoding or "utf-8"
-    except Exception:
-        resp.encoding = "utf-8"
+    if force_encoding:
+        resp.encoding = force_encoding
+    else:
+        try:
+            resp.encoding = resp.apparent_encoding or "utf-8"
+        except Exception:
+            resp.encoding = "utf-8"
     text = resp.text
     # 优先 lxml，fallback html.parser
     try:
@@ -119,6 +143,7 @@ class HttpCollector(BaseCollector):
     SOURCE_NAME = ""
     MAX_ITEMS = 15
     REFERER = ""
+    FORCE_ENCODING = None  # 强制指定编码
 
     def fetch(self) -> list[NewsItem]:
         """抓取新闻入口"""
@@ -137,7 +162,7 @@ class HttpCollector(BaseCollector):
             headers["Referer"] = self.REFERER
 
         resp = self._get(self.URL, headers=headers)
-        soup = _safe_parse_html(resp)
+        soup = _safe_parse_html(resp, force_encoding=self.FORCE_ENCODING)
 
         items = []
 
@@ -219,20 +244,20 @@ class HttpCollector(BaseCollector):
 # ==================== 具体采集器 ====================
 
 class SinaFinanceCollector(HttpCollector):
-    """新浪财经 - 滚动新闻"""
-    URL = "https://finance.sina.com.cn/roll/index.d.html"
+    """新浪财经 - 首页要闻"""
+    URL = "https://finance.sina.com.cn/"
     SELECTORS = [
-        "#fin_tabs0_c0 li a",
-        ".fin_tabs0_c0 a",
-        "ul.list_009 li a",
-        ".ty-card-wrapper a",
-        "[data-sudaclick='news'] a",
-        ".news-item a",
-        ".list-item a",
+        ".feed-card-item a",
+        ".m-pic-news a",
+        "#live-list a",
+        ".news-feed a",
+        ".list_009 li a",
+        "h2 a",
+        "h3 a",
     ]
     SOURCE_NAME = "新浪财经"
     MAX_ITEMS = 20
-    REFERER = "https://finance.sina.com.cn/"
+    REFERER = "https://www.sina.com.cn/"
 
 
 class EastmoneyCollector(HttpCollector):
@@ -253,21 +278,21 @@ class EastmoneyCollector(HttpCollector):
 
 
 class HexunCollector(HttpCollector):
-    """和讯网 - 财经新闻"""
-    URL = "https://www.hexun.com/"
+    """和讯网 - 新闻频道"""
+    URL = "https://news.hexun.com/"
     SELECTORS = [
+        "li a[href*='.html']",
         ".news-item a",
         ".item a",
         ".title a",
-        ".list a",
         "h3 a",
         "h2 a",
-        ".con a",
         ".list-item a",
     ]
     SOURCE_NAME = "和讯网"
     MAX_ITEMS = 20
     REFERER = "https://www.hexun.com/"
+    FORCE_ENCODING = "gbk"  # 和讯网使用 GBK 编码
 
 
 class YicaiCollector(HttpCollector):
@@ -307,15 +332,16 @@ class STCNCollector(HttpCollector):
 
 
 class CailiansheCollector(HttpCollector):
-    """财联社 - 电报"""
-    URL = "https://www.cls.cn/telegraph"
+    """财联社 - 首页要闻（电报页需要JS渲染，改用首页）"""
+    URL = "https://www.cls.cn/"
     SELECTORS = [
+        "a[href*='/detail/']",
         ".telegraph-content a",
         ".content a",
-        ".telegraph-item a",
+        "h3 a",
+        "h2 a",
         ".news-item a",
-        ".telegraph-list a",
-        ".item-content a",
+        ".item a",
     ]
     SOURCE_NAME = "财联社"
     MAX_ITEMS = 20
@@ -323,7 +349,7 @@ class CailiansheCollector(HttpCollector):
 
 
 class WallstreetcnCollector(HttpCollector):
-    """华尔街见闻"""
+    """华尔街见闻（DNS 可能不通，保留备用）"""
     URL = "https://wallstreetcn.com/news/global"
     SELECTORS = [
         ".article-item a",
@@ -374,18 +400,59 @@ class CaixinCollector(HttpCollector):
     REFERER = "https://china.caixin.com/"
 
 
+class ITHomeCollector(HttpCollector):
+    """IT之家 - 科技数码新闻"""
+    URL = "https://www.ithome.com/"
+    SELECTORS = [
+        "li a[href*='ithome.com/0/']",
+        "ul li a[href*='/0/']",
+        ".lst li a",
+        ".hot-list li a",
+        "h3 a",
+        "h2 a",
+        ".title a",
+        ".list a",
+    ]
+    SOURCE_NAME = "IT之家"
+    MAX_ITEMS = 25  # IT之家新闻量大，多抓一些
+    REFERER = "https://www.ithome.com/"
+
+    # IT之家首页有大量非新闻的工具/下载链接，需要额外过滤
+    EXCLUDE_KEYWORDS = {
+        "下载", "镜像", "描述文件", "壁纸", "主题", "字体",
+        "插件", "扩展", "驱动", "工具", "教程", "设置",
+        "立即下载", "点击下载", "免费下载",
+    }
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """重写验证，排除IT之家特有的非新闻链接"""
+        if not super()._validate_item(title, href):
+            return False
+        # 排除站内工具/下载页
+        for kw in self.EXCLUDE_KEYWORDS:
+            if kw in title:
+                return False
+        # 排除历史页面（编号小于800的一般是很老的常驻链接）
+        href_nums = re.findall(r'/(\d+)/\d+\.htm', href)
+        if href_nums and int(href_nums[0]) < 800:
+            return False
+            return False
+        return True
+
+
 # ==================== 入口函数 ====================
 
 def get_all_collectors() -> list[BaseCollector]:
     """获取所有可用的新闻采集器"""
     return [
-        SinaFinanceCollector(),
-        EastmoneyCollector(),
-        HexunCollector(),
-        YicaiCollector(),
-        STCNCollector(),
-        CailiansheCollector(),
-        WallstreetcnCollector(),
-        Kr36Collector(),
-        CaixinCollector(),
+        SinaFinanceCollector(),       # 新浪财经
+        EastmoneyCollector(),         # 东方财富
+        HexunCollector(),             # 和讯网
+        YicaiCollector(),             # 第一财经
+        STCNCollector(),              # 证券时报
+        CailiansheCollector(),         # 财联社
+        Kr36Collector(),              # 36氪
+        CaixinCollector(),            # 财新网
+        ITHomeCollector(),            # IT之家（新增）
+        WallstreetcnCollector(),      # 华尔街见闻（可能 DNS 不通，放最后）
     ]

@@ -3,7 +3,7 @@ chcp 65001 >nul 2>&1
 title News-to-Stock AI Analyst
 
 echo ============================================================
-echo   News-to-Stock AI Analyst v0.2.4
+echo   News-to-Stock AI Analyst v0.2.5
 echo ============================================================
 echo.
 

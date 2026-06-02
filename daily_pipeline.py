@@ -84,13 +84,13 @@ def run_daily_pipeline(theme: str = "light") -> Path:
     collectors = get_all_collectors()
     all_news = []
 
-    # 使用线程池并发采集，最多5个并发，单个源最多等20秒
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    # 使用线程池并发采集，每个采集器独立Session，全并发执行
+    with ThreadPoolExecutor(max_workers=len(collectors)) as executor:
         future_to_name = {
             executor.submit(_fetch_one, c): c.SOURCE_NAME
             for c in collectors
         }
-        for future in as_completed(future_to_name, timeout=30):
+        for future in as_completed(future_to_name, timeout=90):
             name = future_to_name[future]
             try:
                 items = future.result(timeout=20)

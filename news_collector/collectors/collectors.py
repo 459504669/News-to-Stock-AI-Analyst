@@ -8,6 +8,10 @@ v0.2.5 更新：
   - 和讯网：换用 news.hexun.com 子站，修复 GBK 编码
   - 华尔街见闻：DNS 可能不通，保留但降优先级
   - 新增 IT之家(ithome.com) 科技新闻源
+
+v0.3.0 更新：
+  - 新增 8 个权威新闻源：人民网、新华网、国务院网、经济参考报、
+    中国证券报、上海证券报、半月谈、参考消息
 """
 import re
 from datetime import datetime, timedelta
@@ -89,6 +93,16 @@ def _looks_like_news(title: str, href: str) -> bool:
         "/0/", "ithome.com",
         # 财联社 URL 模式
         "/detail/",
+        # 新华网/经济参考报 URL 模式 (hash/c.html)
+        "/c.html",
+        # 国务院网 URL 模式 (content_xxx.htm)
+        "content_",
+        # 中国证券报 URL 模式 (detail_xxx.html)
+        "detail_",
+        # 参考消息 URL 模式 (.shtml)
+        ".shtml",
+        # 上海证券报 URL 模式
+        "commondetail", "topicdetail",
     ]
     has_url_indicator = any(kw in href.lower() for kw in url_indicators)
     has_finance_kw = any(kw in title for kw in FINANCE_KEYWORDS)
@@ -436,6 +450,267 @@ class ITHomeCollector(HttpCollector):
         href_nums = re.findall(r'/(\d+)/\d+\.htm', href)
         if href_nums and int(href_nums[0]) < 800:
             return False
+        return True
+
+
+# ==================== v0.3.0 新增采集器 ====================
+
+class PeopleCollector(HttpCollector):
+    """人民网 - 时政/经济要闻（首页抓取）"""
+    URL = "http://www.people.com.cn/"
+    SELECTORS = [
+        "h3 a",
+        "h2 a",
+        ".news_item a",
+        ".hdNews a",
+        ".list a",
+        "li a[href*='.html']",
+        "li a[href*='.htm']",
+        ".hd a",
+        ".title a",
+        ".text a",
+    ]
+    SOURCE_NAME = "人民网"
+    MAX_ITEMS = 15
+    REFERER = "http://www.people.com.cn/"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 人民网反爬严格，需要更真实的请求头
+        self.session.headers.update({
+            "Referer": "http://www.people.com.cn/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        })
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """人民网特有验证"""
+        if not super()._validate_item(title, href):
+            return False
+        # 只要 people.com.cn 域名下的新闻链接
+        if "people.com.cn" not in href:
+            return False
+        # 排除导航/专题/聚合页
+        exclude_paths = ["/politics/", "/CPH/", "/shipin/", "/data/",
+                         "/material/", "/keywords/", "/315/",
+                         "index.html", "index.htm", "#"]
+        for p in exclude_paths:
+            if p in href:
+                return False
+        return True
+
+
+class XinhuaCollector(HttpCollector):
+    """新华网 - 财经频道"""
+    URL = "http://www.news.cn/fortune/index.htm"
+    SELECTORS = [
+        "a[href*='/fortune/']",
+        "a[href*='/c.html']",
+        "h3 a",
+        "h2 a",
+        ".blue a",
+        ".news-list a",
+        "li a[href*='c.html']",
+        "ul li a",
+        ".item a",
+    ]
+    SOURCE_NAME = "新华网"
+    MAX_ITEMS = 20
+    REFERER = "http://www.news.cn/"
+    FORCE_ENCODING = "utf-8"
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """新华网特有验证：只取带日期和hash的新闻链接"""
+        if not super()._validate_item(title, href):
+            return False
+        # 新华网新闻URL模式: /{channel}/YYYYMMDD/{32位hash}/c.html
+        if not re.search(r'/\d{8}/[a-f0-9]{20,}/c\.html', href):
+            return False
+        return True
+
+
+class GovCollector(HttpCollector):
+    """国务院网 - 首页要闻（要闻列表页需JS渲染，改用首页）"""
+    URL = "http://www.gov.cn/"
+    SELECTORS = [
+        "a[href*='content_']",
+        "a[href*='yaowen']",
+        "a[href*='zhengce']",
+        "a[href*='lianbo']",
+        "h3 a",
+        "h2 a",
+        "ul li a",
+        ".list a",
+        ".news a",
+        ".item a",
+    ]
+    SOURCE_NAME = "国务院网"
+    MAX_ITEMS = 15
+    REFERER = "http://www.gov.cn/"
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """国务院网特有验证"""
+        if not super()._validate_item(title, href):
+            return False
+        # 只保留 gov.cn 域名下的链接
+        if "gov.cn" not in href:
+            return False
+        # 排除导航/功能页
+        nav_words = {"首页", "国务院", "客户端", "简体中文", "无障碍",
+                     "登录", "注册", "邮箱", "隐私", "免责"}
+        for nw in nav_words:
+            if nw in title:
+                return False
+        # 排除非新闻链接
+        if any(x in href for x in ["/fuwu/", "/hudong/", "/gongbao/",
+                                     "download", "mail.", "weibo"]):
+            return False
+        return True
+
+
+class JJCKBCollector(HttpCollector):
+    """经济参考报 - 新华社财经媒体"""
+    URL = "http://www.jjckb.cn/"
+    SELECTORS = [
+        "h3 a",
+        "h2 a",
+        "a[href*='c.html']",
+        "a[href*='.html']",
+        "ul li a",
+        ".news a",
+        ".item a",
+        ".list a",
+        "li a",
+    ]
+    SOURCE_NAME = "经济参考报"
+    MAX_ITEMS = 20
+    REFERER = "http://www.jjckb.cn/"
+    FORCE_ENCODING = "utf-8"
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """经济参考报验证"""
+        if not super()._validate_item(title, href):
+            return False
+        # 保留 jjckb.cn 域名下的新闻链接
+        if "jjckb.cn" not in href:
+            return False
+        # 排除栏目首页、专题页（路径短的非新闻页）
+        if href.count("/") <= 3 and not re.search(r'/\d{8}/', href):
+            return False
+        return True
+
+
+class CSCollector(HttpCollector):
+    """中国证券报（中证网）- 证券权威资讯"""
+    URL = "http://www.cs.com.cn/"
+    SELECTORS = [
+        "a[href*='detail_']",
+        "h3 a",
+        "h2 a",
+        "ul li a",
+        ".news a",
+        ".item a",
+        ".list a",
+        ".title a",
+    ]
+    SOURCE_NAME = "中国证券报"
+    MAX_ITEMS = 20
+    REFERER = "http://www.cs.com.cn/"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 中国证券报响应较慢，增加超时
+        self.timeout = 15
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """中国证券报验证"""
+        if not super()._validate_item(title, href):
+            return False
+        # 只保留 cs.com.cn 域名
+        if "cs.com.cn" not in href:
+            return False
+        # URL模式: /{channel}/YYYY/MM/DD/detail_{timestamp}.html
+        # 或其他新闻链接格式
+        if not re.search(r'detail_\d{10,}\.html', href):
+            # 如果不是detail格式，尝试接受其他新闻链接
+            if not any(x in href for x in ['list.html', 'index.html']):
+                # 仍然需要匹配某些新闻模式
+                pass
+        return True
+
+
+class CNStockCollector(HttpCollector):
+    """上海证券报·中国证券网（Next.js 前端，可能部分内容需JS渲染）"""
+    URL = "http://www.cnstock.com/"
+    SELECTORS = [
+        "a[href*='commonDetail']",
+        "a[href*='topicDetail']",
+        "h3 a",
+        "h2 a",
+        "ul li a",
+        ".news a",
+        ".item a",
+        ".list a",
+    ]
+    SOURCE_NAME = "上海证券报"
+    MAX_ITEMS = 15
+    REFERER = "http://www.cnstock.com/"
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """上海证券报特有验证"""
+        if not super()._validate_item(title, href):
+            return False
+        # 只取详情页链接：/commonDetail/{id} 或 /topicDetail/{id}
+        if not re.search(r'/(commonDetail|topicDetail)/\d+', href):
+            return False
+        return True
+
+
+class BanyuetanCollector(HttpCollector):
+    """半月谈 - 新华社时政期刊（域名可能间歇性不可达）"""
+    URL = "http://www.banyuetan.org/"
+    SELECTORS = [
+        "h3 a",
+        "h2 a",
+        "a[href*='.shtml']",
+        "a[href*='.html']",
+        "ul li a",
+        ".news a",
+        ".item a",
+        ".list a",
+        ".title a",
+    ]
+    SOURCE_NAME = "半月谈"
+    MAX_ITEMS = 15
+    REFERER = "http://www.banyuetan.org/"
+
+
+class CankaoCollector(HttpCollector):
+    """参考消息 - 新华社国际资讯（使用首页，放宽验证）"""
+    URL = "http://www.cankaoxiaoxi.com/"
+    SELECTORS = [
+        "a[href*='.shtml']",
+        "a[href*='.html']",
+        "h3 a",
+        "h2 a",
+        "ul li a",
+        ".news a",
+        ".item a",
+        ".list a",
+        ".title a",
+    ]
+    SOURCE_NAME = "参考消息"
+    MAX_ITEMS = 15
+    REFERER = "http://www.cankaoxiaoxi.com/"
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """参考消息验证"""
+        if not super()._validate_item(title, href):
+            return False
+        # 只保留 cankaoxiaoxi.com 域名
+        if "cankaoxiaoxi.com" not in href:
+            return False
+        # 排除首页、频道首页、index页面
+        if href.endswith("/") or "index" in href:
             return False
         return True
 
@@ -453,6 +728,14 @@ def get_all_collectors() -> list[BaseCollector]:
         CailiansheCollector(),         # 财联社
         Kr36Collector(),              # 36氪
         CaixinCollector(),            # 财新网
-        ITHomeCollector(),            # IT之家（新增）
+        ITHomeCollector(),            # IT之家
+        PeopleCollector(),            # 人民网（v0.3.0新增）
+        XinhuaCollector(),            # 新华网·财经（v0.3.0新增）
+        GovCollector(),               # 国务院网（v0.3.0新增）
+        JJCKBCollector(),             # 经济参考报（v0.3.0新增）
+        CSCollector(),                # 中国证券报（v0.3.0新增）
+        CNStockCollector(),           # 上海证券报（v0.3.0新增）
+        BanyuetanCollector(),         # 半月谈（v0.3.0新增）
+        CankaoCollector(),            # 参考消息（v0.3.0新增）
         WallstreetcnCollector(),      # 华尔街见闻（可能 DNS 不通，放最后）
     ]

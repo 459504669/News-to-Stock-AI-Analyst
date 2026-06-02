@@ -71,7 +71,7 @@ def _load_latest_report(path: Path) -> dict:
 app = FastAPI(
     title="News-to-Stock AI Analyst API",
     description="AI 驱动的实时新闻股市分析工具 API - 自动抓取新闻、分析市场影响、生成日报图",
-    version="0.2.5",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -96,7 +96,7 @@ def get_db():
 def read_root():
     return {
         "name": "News-to-Stock AI Analyst",
-        "version": "0.2.5",
+        "version": "0.3.0",
         "status": "running",
         "endpoints": {
             "GET  /api/news/latest": "获取最新新闻列表",

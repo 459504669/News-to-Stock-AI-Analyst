@@ -1,6 +1,6 @@
 """
-市场日报图生成器 v3.0 - 金融终端暗黑 Neon 风格
-参考：深蓝黑底 + 青色描边卡片 + 橙红渐变进度条 + 霓虹字效
+市场日报图生成器 v3.1 - 金融终端暗黑 Neon 风格
+v3.1: 精确卡片高度 + 独立程序图标 + 修复框线错位
 """
 import textwrap
 import math
@@ -20,19 +20,6 @@ PAD   = 28     # 全局边距
 CARD_PAD = 20  # 卡片内边距
 
 # ── 金融终端暗黑配色 ─────────────────────────────────────────────────────────
-#
-#  主背景：深蓝黑  #090E1A
-#  卡片背景：深蓝  #0D1526
-#  青色 neon 描边：#00E5FF / #00BCD4
-#  橙色强调（涨）：#FF6D00 / #FF9100
-#  红色（利好）：  #FF1744
-#  绿色（利空）：  #00E676
-#  金色区块标题：  #FFD600
-#  文字主色：      #E0F7FA
-#  文字次色：      #4DD0E1
-#  文字弱色：      #1A3A5C
-#
-
 THEME = {
     # 背景层
     "bg":              "#090E1A",
@@ -59,23 +46,23 @@ THEME = {
     "text_muted":      "#2A5070",
 
     # 评级色（A股：红=涨/利好，绿=跌/利空）
-    "rating_5":        "#FF1744",   # 强烈利好
-    "rating_4":        "#FF5252",   # 利好
-    "rating_3":        "#78909C",   # 中性
-    "rating_2":        "#00E676",   # 利空
-    "rating_1":        "#00C853",   # 强烈利空
+    "rating_5":        "#FF1744",
+    "rating_4":        "#FF5252",
+    "rating_3":        "#78909C",
+    "rating_2":        "#00E676",
+    "rating_1":        "#00C853",
 
     # 特殊元素
     "bull":            "#FF1744",
     "bear":            "#00E676",
     "neutral":         "#78909C",
-    "scan_line":       "#FFFFFF05",  # 扫描线（极淡）
+    "scan_line":       "#FFFFFF05",
 
     # 渐变进度条颜色
     "bar_track":       "#0D1E30",
-    "bar_bull":        "#FF3D00",    # 橙红起点
-    "bar_bull_end":    "#FF9100",    # 橙黄终点
-    "bar_bear":        "#00BFA5",    # 绿色
+    "bar_bull":        "#FF3D00",
+    "bar_bull_end":    "#FF9100",
+    "bar_bear":        "#00BFA5",
     "bar_neutral":     "#37474F",
 
     # 头部渐变
@@ -99,7 +86,6 @@ def _rating_color(score: int) -> str:
 class FontSet:
     def __init__(self, reg_path: str, bold_path: str = None):
         import os
-        # 如果没有 bold 字体或文件不存在，用 Regular 代替
         bp = bold_path if (bold_path and os.path.exists(bold_path)) else reg_path
         try:
             def r(s): return ImageFont.truetype(reg_path, s)
@@ -167,7 +153,6 @@ def _multiline_h(draw: ImageDraw.Draw, text: str, font, gap: int = 6) -> int:
 # ── 扫描线纹理 ────────────────────────────────────────────────────────────────
 
 def _draw_scanlines(img: Image.Image, step: int = 4, alpha: int = 8) -> Image.Image:
-    """给画布叠加扫描线，增强终端感"""
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     od = ImageDraw.Draw(overlay)
     for y in range(0, img.height, step):
@@ -182,7 +167,6 @@ def _draw_scanlines(img: Image.Image, step: int = 4, alpha: int = 8) -> Image.Im
 def _draw_gradient_rect(draw: ImageDraw.Draw,
                          x: int, y: int, w: int, h: int,
                          c1: str, c2: str, horizontal: bool = True):
-    """在 draw 上绘制渐变矩形"""
     steps = w if horizontal else h
     for i in range(steps):
         t = i / max(steps - 1, 1)
@@ -201,7 +185,6 @@ def _draw_neon_card(draw: ImageDraw.Draw,
                     fill_color: str = "#0D1526",
                     radius: int = 8,
                     border_width: int = 1):
-    """深色填充 + neon 描边圆角卡片"""
     draw.rounded_rectangle(
         [(x, y), (x + w, y + h)],
         radius=radius,
@@ -216,8 +199,6 @@ def _draw_neon_card_with_shadow(img: Image.Image,
                                  border_color: str = "#00BCD4",
                                  fill_color: str = "#0D1526",
                                  radius: int = 8) -> Image.Image:
-    """带发光模拟阴影的 neon 卡片"""
-    # 发光层（模拟 neon glow）
     glow = Image.new("RGBA", img.size, (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
     r, g, b = _hex2rgb(border_color)
@@ -227,11 +208,59 @@ def _draw_neon_card_with_shadow(img: Image.Image,
     img_rgba = img.convert("RGBA")
     img_rgba = Image.alpha_composite(img_rgba, glow)
     img = img_rgba.convert("RGB")
-
-    # 实际描边卡片
     d = ImageDraw.Draw(img)
     _draw_neon_card(d, x, y, w, h, border_color, fill_color, radius)
     return img
+
+
+# ── 区块程序图标（按内容类型绘制不同图形） ──────────────────────────────────
+
+def _draw_section_icon(draw: ImageDraw.Draw, cx: int, cy: int,
+                       icon_type: str, color: str):
+    """
+    在 (cx, cy) 中心绘制 18x18 的程序图标。
+    icon_type: "news" | "analysis" | "sectors" | "stocks" | "risks"
+    """
+    if icon_type == "news":
+        # 闪电 ⚡ — 两段锯齿多边形
+        pts = [
+            (cx + 2, cy - 8),   # 顶部
+            (cx - 4, cy),       # 左折
+            (cx + 1, cy - 1),   # 中间凹
+            (cx - 2, cy + 8),   # 底部
+            (cx + 4, cy),       # 右折
+            (cx - 1, cy + 1),   # 中间凸
+        ]
+        draw.polygon(pts, fill=color)
+
+    elif icon_type == "analysis":
+        # 靶心 ◎ — 三层同心圆
+        draw.ellipse([(cx - 8, cy - 8), (cx + 8, cy + 8)],
+                     outline=color, width=1)
+        draw.ellipse([(cx - 4, cy - 4), (cx + 4, cy + 4)],
+                     outline=color, width=1)
+        draw.ellipse([(cx - 1, cy - 1), (cx + 1, cy + 1)], fill=color)
+
+    elif icon_type == "sectors":
+        # 火焰 🔥 — 外焰三角 + 内焰
+        draw.polygon([(cx, cy - 8), (cx - 6, cy + 3), (cx + 6, cy + 3)],
+                     outline=color, width=1)
+        draw.polygon([(cx, cy - 3), (cx - 3, cy + 8), (cx + 3, cy + 8)],
+                     outline=color, width=1)
+        draw.ellipse([(cx - 2, cy + 2), (cx + 2, cy + 7)], fill=color)
+
+    elif icon_type == "stocks":
+        # 上升趋势 📈 — 三角箭头 + 竖线
+        draw.polygon([(cx, cy - 8), (cx - 7, cy + 1), (cx + 7, cy + 1)],
+                     fill=color)
+        draw.rectangle([(cx - 1, cy + 1), (cx + 1, cy + 9)], fill=color)
+
+    elif icon_type == "risks":
+        # 警告三角 ⚠ — 外三角 + 感叹号
+        pts = [(cx, cy - 8), (cx - 8, cy + 6), (cx + 8, cy + 6)]
+        draw.polygon(pts, outline=color, width=1)
+        draw.line([(cx, cy - 3), (cx, cy + 2)], fill=color, width=2)
+        draw.ellipse([(cx - 1, cy + 3), (cx + 1, cy + 5)], fill=color)
 
 
 # ── 区块标题行 ────────────────────────────────────────────────────────────────
@@ -239,25 +268,23 @@ def _draw_neon_card_with_shadow(img: Image.Image,
 def _draw_block_title(draw: ImageDraw.Draw,
                       x: int, y: int,
                       title: str,
-                      icon: str,
+                      icon_type: str,
                       title_color: str,
                       accent_color: str,
                       fonts: FontSet) -> int:
     """
-    左侧竖条 + 彩色圆点 + 标题
+    左侧竖条 + 程序图标 + 标题文字
+    icon_type: "news" | "analysis" | "sectors" | "stocks" | "risks"
     返回：标题高度
     """
     bar_h = 22
     draw.rounded_rectangle([(x, y + 3), (x + 3, y + 3 + bar_h)],
                             radius=1, fill=accent_color)
-    # 用程序绘制彩色圆点代替 Unicode 图标（避免字体不支持显示为方框）
-    dot_r = 5
-    dot_cx = x + 18
-    dot_cy = y + 12
-    draw.ellipse([(dot_cx - dot_r, dot_cy - dot_r),
-                  (dot_cx + dot_r, dot_cy + dot_r)],
-                 fill=accent_color)
-    draw.text((x + 30, y), title, font=fonts.h2, fill=title_color)
+    # 绘制对应区块的程序图标
+    icon_cx = x + 18
+    icon_cy = y + 13
+    _draw_section_icon(draw, icon_cx, icon_cy, icon_type, accent_color)
+    draw.text((x + 32, y), title, font=fonts.h2, fill=title_color)
     _, th = _text_wh(draw, title, fonts.h2)
     return th + 4
 
@@ -277,23 +304,18 @@ def _draw_neon_bar(draw: ImageDraw.Draw,
                    c2: str = "#FF9100",
                    track: str = "#0D1E30",
                    radius: int = 3):
-    """渐变填充进度条"""
-    # 轨道
     draw.rounded_rectangle([(x, y), (x + w, y + h)],
                             radius=radius, fill=track)
     filled = max(int(w * value), radius * 2 + 2)
     filled = min(filled, w)
-    # 渐变填充
     for i in range(filled):
         t = i / max(filled - 1, 1)
         color = _lerp_color(c1, c2, t)
         cx = x + i
         if i == 0:
-            # 左圆角
             draw.rounded_rectangle([(x, y), (x + radius * 2, y + h)],
                                     radius=radius, fill=_lerp_color(c1, c2, 0))
         draw.line([(cx, y + 1), (cx, y + h - 1)], fill=color)
-    # 高光线（顶部）
     r, g, b = _lerp_color(c1, c2, 0.6)
     draw.line([(x + 2, y + 1), (x + filled - 2, y + 1)],
               fill=(min(r + 80, 255), min(g + 80, 255), min(b + 80, 255)), width=1)
@@ -306,27 +328,22 @@ def _render_header(img: Image.Image, fonts: FontSet, result, rating: Rating) -> 
     draw = ImageDraw.Draw(img)
     c = THEME
 
-    # 渐变背景
     for py in range(H):
         t = py / H
         color = _lerp_color(c["header_top"], c["header_bot"], t)
         draw.line([(0, py), (WIDTH, py)], fill=color)
 
-    # 底部 neon 线
     draw.line([(0, H - 2), (WIDTH, H - 2)], fill=c["header_accent"], width=2)
-    # 顶部细线
     draw.line([(0, 0), (WIDTH, 0)], fill=c["border_cyan_dim"], width=1)
 
-    # 左侧：系统名
     draw.text((PAD, 22), "AI MARKET TERMINAL", font=fonts.h3, fill=c["text_cyan"])
     draw.text((PAD, 52), "市场日报", font=fonts.hero, fill=c["text_white"])
 
-    # 日期 + 新闻数
     now_str = datetime.now().strftime("%Y-%m-%d  %H:%M")
     draw.text((PAD, 116), now_str, font=fonts.body_sm, fill=c["text_cyan"])
     draw.text((PAD, 140), f"基于 {result.news_count} 条新闻分析", font=fonts.caption, fill=c["text_muted"])
 
-    # 右侧：评级胶囊
+    # 右侧：评级胶囊（精确居中）
     rating_color = _rating_color(rating.score)
     score_text = rating.label
     tw, th_score = _text_wh(draw, score_text, fonts.score_mid)
@@ -342,12 +359,10 @@ def _render_header(img: Image.Image, fonts: FontSet, result, rating: Rating) -> 
     draw.text((badge_x + badge_px, badge_y + badge_py), score_text,
               font=fonts.score_mid, fill=rating_color)
 
-    # 星级
     stars = rating.stars
     stw, _ = _text_wh(draw, stars, fonts.h2)
     draw.text((WIDTH - stw - PAD, 96), stars, font=fonts.h2, fill=rating_color)
 
-    # 置信度
     conf = result.confidence
     bar_x = WIDTH - 220 - PAD
     draw.text((bar_x, 130), "置信度", font=fonts.caption, fill=c["text_cyan"])
@@ -369,12 +384,10 @@ def _render_sentiment(draw: ImageDraw.Draw, fonts: FontSet, y: int, result, rati
     rating_color = _rating_color(rating.score)
     r, g, b = _hex2rgb(rating_color)
 
-    # 半透明填充
     draw.rounded_rectangle([(PAD, y), (WIDTH - PAD, y + H)],
                             radius=6, fill=(r, g, b, 30),
                             outline=rating_color, width=1)
 
-    # 箭头 + 文字（程序绘制三角形代替 Unicode）
     sentiment = result.overall_sentiment or rating.label
     arrow_x = PAD + 16
     arrow_y = y + 17
@@ -383,7 +396,6 @@ def _render_sentiment(draw: ImageDraw.Draw, fonts: FontSet, y: int, result, rati
     draw.text((PAD + 32, y + 12), f"市场整体情绪：{sentiment}",
               font=fonts.h3, fill=c["text_bright"])
 
-    # 右侧时间维度
     h_text = result.time_horizon_label
     htw, _ = _text_wh(draw, h_text, fonts.tag)
     hx = WIDTH - htw - PAD - 20
@@ -394,41 +406,57 @@ def _render_sentiment(draw: ImageDraw.Draw, fonts: FontSet, y: int, result, rati
     return H + 14
 
 
-# ── 新闻区块 ──────────────────────────────────────────────────────────────────
+# ── 新闻区块（精确高度计算） ────────────────────────────────────────────────
 
-def _est_news_h(fonts: FontSet, news_list: list) -> int:
-    # 粗估（实际绘制时精确）
-    total = 0
-    for news in news_list[:5]:
-        title_lines = math.ceil(len(news.get("title", "")) / 26) + 1
-        total += title_lines * 28 + 30
-    return total + 20
+def _calc_news_h(draw, fonts, news_list) -> int:
+    """精确预计算新闻区块内容高度（与渲染逻辑完全一致）"""
+    display_count = min(10, len(news_list))
+    # 标题高度
+    _, title_th = _text_wh(draw, f"重要新闻 TOP {display_count}", fonts.h2)
+    th = title_th + 4
+    total = 14 + th + 22  # top_pad + title + divider_gap
+
+    for i, news in enumerate(news_list[:display_count]):
+        total += 24  # 序号 + 来源行
+        title = news.get("title", "")
+        wrapped = _wrap(title, chars=28)
+        total += _multiline_h(draw, wrapped, fonts.body, gap=5) + 4
+        comment = news.get("comment", "")[:80]
+        if comment:
+            cmt = _wrap(f"  -> {comment}", chars=32)
+            total += _multiline_h(draw, cmt, fonts.body_sm, gap=4) + 2
+        total += 10
+        if i < display_count - 1:
+            total += 12
+
+    return total + 20  # bottom_pad
 
 
 def _render_news(img: Image.Image, draw: ImageDraw.Draw,
                   fonts: FontSet, y: int, news_list: list) -> Tuple:
     c = THEME
     card_w = WIDTH - PAD * 2
-    inner_h = _est_news_h(fonts, news_list)
-    card_h = inner_h + 70
+    display_count = min(10, len(news_list))
+
+    # 精确计算卡片高度
+    card_h = _calc_news_h(draw, fonts, news_list)
 
     img = _draw_neon_card_with_shadow(img, PAD, y, card_w, card_h,
                                        border_color=c["border_cyan"])
     draw = ImageDraw.Draw(img)
 
     th = _draw_block_title(draw, PAD + CARD_PAD, y + 14,
-                            f"重要新闻 TOP {min(5, len(news_list))}",
-                            "◈", c["text_gold"], c["border_gold"], fonts)
+                            f"重要新闻 TOP {display_count}",
+                            "news", c["text_gold"], c["border_gold"], fonts)
     _draw_neon_divider(draw, PAD + 12, y + 14 + th + 8, card_w - 24, c["border_cyan_dim"])
 
     cy = y + 14 + th + 22
-    for i, news in enumerate(news_list[:5]):
+    for i, news in enumerate(news_list[:display_count]):
         title   = news.get("title", "")
         comment = news.get("comment", "")[:80]
         source  = news.get("source", "")
-        impact  = news.get("impact", 3)    # 1-5 影响力
+        impact  = news.get("impact", 3)
 
-        # 序号 + 来源行
         num_color = [c["text_muted"], c["border_cyan_dim"],
                      c["text_cyan"], c["text_orange"], c["border_red"]][min(impact - 1, 4)]
         draw.text((PAD + CARD_PAD, cy), f"{i + 1:02d}", font=fonts.label, fill=num_color)
@@ -443,25 +471,24 @@ def _render_news(img: Image.Image, draw: ImageDraw.Draw,
 
         cy += 24
 
-        # 标题
         title_w = _wrap(title, chars=28)
         draw.text((PAD + CARD_PAD + 34, cy), title_w, font=fonts.body, fill=c["text_bright"])
         th2 = _multiline_h(draw, title_w, fonts.body, gap=5) + 4
         cy += th2
 
-        # 点评
         if comment:
-            cmt_w = _wrap(f"  → {comment}", chars=32)
+            cmt_w = _wrap(f"  -> {comment}", chars=32)
             draw.text((PAD + CARD_PAD + 34, cy), cmt_w, font=fonts.body_sm, fill=c["text_cyan"])
             cy += _multiline_h(draw, cmt_w, fonts.body_sm, gap=4) + 2
 
         cy += 10
-        if i < len(news_list[:5]) - 1:
+        if i < display_count - 1:
             _draw_neon_divider(draw, PAD + CARD_PAD, cy, card_w - CARD_PAD * 2,
                                 c["border_cyan_dim"])
             cy += 12
 
-    return img, draw, (cy - y) + 20
+    # 返回实际使用的卡片高度（= card_h）
+    return img, draw, card_h + 14
 
 
 # ── 综合分析区块 ──────────────────────────────────────────────────────────────
@@ -472,14 +499,14 @@ def _render_analysis(img: Image.Image, draw: ImageDraw.Draw,
     card_w = WIDTH - PAD * 2
     wrapped = _wrap(text, chars=32)
     inner_h = _multiline_h(draw, wrapped, fonts.body, gap=9)
-    card_h = inner_h + 80
+    card_h = 14 + 28 + 22 + inner_h + 20  # top_pad + title_h + gap + content + bottom_pad
 
     img = _draw_neon_card_with_shadow(img, PAD, y, card_w, card_h,
                                        border_color=c["border_cyan"])
     draw = ImageDraw.Draw(img)
 
     th = _draw_block_title(draw, PAD + CARD_PAD, y + 14,
-                            "AI 综合分析", "◉", c["text_gold"], c["border_gold"], fonts)
+                            "AI 综合分析", "analysis", c["text_gold"], c["border_gold"], fonts)
     _draw_neon_divider(draw, PAD + 12, y + 14 + th + 8, card_w - 24, c["border_cyan_dim"])
     draw.text((PAD + CARD_PAD, y + 14 + th + 22), wrapped,
               font=fonts.body, fill=c["text_bright"], spacing=7)
@@ -488,16 +515,15 @@ def _render_analysis(img: Image.Image, draw: ImageDraw.Draw,
 
 # ── 板块区块 ──────────────────────────────────────────────────────────────────
 
-# 板块标签调色板（终端 neon 色组）
 _SECTOR_PALETTE = [
-    ("#FF1744", "#200009"),   # 红
-    ("#FF6D00", "#1A0D00"),   # 深橙
-    ("#FFD600", "#1A1400"),   # 金黄
-    ("#00E5FF", "#00131A"),   # 青
-    ("#00E676", "#00130A"),   # 绿
-    ("#D500F9", "#150022"),   # 紫
-    ("#FF4081", "#1A001B"),   # 粉红
-    ("#40C4FF", "#001A22"),   # 天蓝
+    ("#FF1744", "#200009"),
+    ("#FF6D00", "#1A0D00"),
+    ("#FFD600", "#1A1400"),
+    ("#00E5FF", "#00131A"),
+    ("#00E676", "#00130A"),
+    ("#D500F9", "#150022"),
+    ("#FF4081", "#1A001B"),
+    ("#40C4FF", "#001A22"),
 ]
 
 
@@ -520,7 +546,7 @@ def _render_sectors(img: Image.Image, draw: ImageDraw.Draw,
     draw = ImageDraw.Draw(img)
 
     th = _draw_block_title(draw, PAD + CARD_PAD, y + 14,
-                            "热门受益板块", "◆", c["text_gold"], c["border_gold"], fonts)
+                            "热门受益板块", "sectors", c["text_gold"], c["border_gold"], fonts)
     _draw_neon_divider(draw, PAD + 12, y + 14 + th + 8, card_w - 24, c["border_cyan_dim"])
 
     cx = PAD + CARD_PAD
@@ -561,7 +587,7 @@ def _render_stocks(img: Image.Image, draw: ImageDraw.Draw,
     draw = ImageDraw.Draw(img)
 
     th = _draw_block_title(draw, PAD + CARD_PAD, y + 14,
-                            "推荐关注标的", "▲", c["text_orange"], c["border_orange"], fonts)
+                            "推荐关注标的", "stocks", c["text_orange"], c["border_orange"], fonts)
     _draw_neon_divider(draw, PAD + 12, y + 14 + th + 8, card_w - 24, c["border_orange"])
 
     col_w = (card_w - CARD_PAD * 2 - 8) // 2
@@ -578,19 +604,15 @@ def _render_stocks(img: Image.Image, draw: ImageDraw.Draw,
         logic  = stock.get("logic", "")[:36]
         conf   = stock.get("confidence", 0.7)
 
-        # 子卡片
         _draw_neon_card(draw, sx, sy, col_w, sub_h,
                         border_color=c["border_orange"],
                         fill_color=c["surface2"], radius=6, border_width=1)
 
-        # 序号
         draw.text((sx + 8, sy + 8), f"{i + 1:02d}", font=fonts.caption, fill=c["text_orange"])
 
-        # 股票代码 + 名称
         header = f"{code}  {name}" if code else name
         draw.text((sx + 36, sy + 6), header, font=fonts.h3, fill=c["text_white"])
 
-        # 置信度进度条
         bar_w = col_w - 48
         _draw_neon_bar(draw, sx + 36, sy + 35, bar_w, 6, conf,
                        c1=c["bar_bull"], c2=c["bar_bull_end"])
@@ -599,7 +621,6 @@ def _render_stocks(img: Image.Image, draw: ImageDraw.Draw,
         draw.text((sx + col_w - ctw - 8, sy + 30), conf_text,
                   font=fonts.caption, fill=c["text_orange"])
 
-        # 逻辑摘要
         if logic:
             draw.text((sx + 8, sy + 52), _wrap(logic, chars=19),
                       font=fonts.caption, fill=c["text_cyan"])
@@ -607,13 +628,18 @@ def _render_stocks(img: Image.Image, draw: ImageDraw.Draw,
     return img, draw, card_h + 14
 
 
-# ── 风险提示区块 ──────────────────────────────────────────────────────────────
+# ── 风险提示区块（精确高度 + 修复双重绘制） ────────────────────────────────
 
-def _est_risks_h(fonts: FontSet, risks: list) -> int:
-    total = 0
-    for r in risks[:4]:
-        lines = math.ceil(len(r) / 28) + 1
-        total += lines * 26 + 10
+def _calc_risks_h(draw, fonts, risks) -> int:
+    """精确预计算风险区块内容高度"""
+    _, title_th = _text_wh(draw, "关键风险提示", fonts.h2)
+    th = title_th + 4
+    total = 14 + th + 22
+
+    for risk in risks[:4]:
+        rw = _wrap(f"  >> {risk}", chars=30)
+        total += _multiline_h(draw, rw, fonts.body, gap=6) + 10
+
     return total + 20
 
 
@@ -621,25 +647,21 @@ def _render_risks(img: Image.Image, draw: ImageDraw.Draw,
                    fonts: FontSet, y: int, risks: list) -> Tuple:
     c = THEME
     card_w = WIDTH - PAD * 2
-    inner_h = _est_risks_h(fonts, risks)
-    card_h = inner_h + 72
+    card_h = _calc_risks_h(draw, fonts, risks)
 
+    # 使用 warning_bg 作为 fill_color，不再重复绘制矩形
     img = _draw_neon_card_with_shadow(img, PAD, y, card_w, card_h,
-                                       border_color=c["warning_border"])
+                                       border_color=c["warning_border"],
+                                       fill_color=c["warning_bg"])
     draw = ImageDraw.Draw(img)
 
-    # 背景填充（警示橙）
-    draw.rounded_rectangle([(PAD, y), (PAD + card_w, y + card_h)],
-                            radius=8, fill=c["warning_bg"],
-                            outline=c["warning_border"], width=1)
-
     th = _draw_block_title(draw, PAD + CARD_PAD, y + 14,
-                            "关键风险提示", "⚠", c["warning_text"], c["warning_border"], fonts)
+                            "关键风险提示", "risks", c["warning_text"], c["warning_border"], fonts)
     _draw_neon_divider(draw, PAD + 12, y + 14 + th + 8, card_w - 24, c["warning_border"])
 
     cy = y + 14 + th + 22
     for risk in risks[:4]:
-        rw = _wrap(f"  ›  {risk}", chars=30)
+        rw = _wrap(f"  >> {risk}", chars=30)
         draw.text((PAD + CARD_PAD, cy), rw, font=fonts.body,
                   fill=c["warning_text"], spacing=6)
         cy += _multiline_h(draw, rw, fonts.body, gap=6) + 10
@@ -651,10 +673,9 @@ def _render_risks(img: Image.Image, draw: ImageDraw.Draw,
 
 def _render_footer(draw: ImageDraw.Draw, fonts: FontSet, y: int):
     c = THEME
-    # 双线页脚
     draw.line([(PAD, y + 4), (WIDTH - PAD, y + 4)], fill=c["border_cyan_dim"], width=1)
     draw.line([(PAD, y + 7), (WIDTH - PAD, y + 7)], fill=c["text_dim"], width=1)
-    footer = "News-to-Stock AI Analyst  ·  AI 自动生成  ·  仅供参考，不构成投资建议"
+    footer = "News-to-Stock AI Analyst  |  AI | 仅供参考，不构成投资建议"
     fw, _ = _text_wh(draw, footer, fonts.caption)
     draw.text(((WIDTH - fw) // 2, y + 16), footer, font=fonts.caption, fill=c["text_muted"])
 
@@ -662,10 +683,9 @@ def _render_footer(draw: ImageDraw.Draw, fonts: FontSet, y: int):
 # ── 主类 ──────────────────────────────────────────────────────────────────────
 
 class MarketDailyVisualizer:
-    """市场日报图生成器 v3.0 — 金融终端暗黑风格"""
+    """市场日报图生成器 v3.1 — 金融终端暗黑风格"""
 
     def __init__(self, theme: str = "dark"):
-        # v3.0 只有一套暗黑主题，theme 参数保留兼容性
         self.theme = "dark"
         self.fonts = FontSet(str(DEFAULT_FONT), str(DEFAULT_FONT_BOLD))
 
@@ -674,15 +694,18 @@ class MarketDailyVisualizer:
         rating = Rating.build(result.overall_rating)
         c      = THEME
 
-        # ── 粗估总高度 ──
+        # ── 创建临时 draw 用于精确高度估算 ──
+        tmp = Image.new("RGB", (1, 1))
+        td = ImageDraw.Draw(tmp)
+
+        # ── 精确估算各区块高度 ──
         header_h    = 190
         sentiment_h = 66
-        news_h      = _est_news_h(fonts, result.top_news) + 80
-        analysis_h  = _multiline_h(ImageDraw.Draw(Image.new("RGB", (1, 1))),
-                                    _wrap(result.market_summary, 32), fonts.body, 9) + 100
-        sectors_h   = _est_sectors_h(result.hot_sectors) + 86
+        news_h      = _calc_news_h(td, fonts, result.top_news) + 14
+        analysis_h  = _multiline_h(td, _wrap(result.market_summary, 32), fonts.body, 9) + 14 + 28 + 22 + 20 + 14
+        sectors_h   = _est_sectors_h(result.hot_sectors) + 72 + 14
         stocks_h    = (math.ceil(min(8, len(result.hot_stocks)) / 2) * 96) + 94
-        risks_h     = _est_risks_h(fonts, result.key_risks) + 86
+        risks_h     = _calc_risks_h(td, fonts, result.key_risks) + 14
         footer_h    = 50
 
         total_h = (header_h + sentiment_h + news_h + analysis_h +
@@ -739,5 +762,5 @@ class MarketDailyVisualizer:
                            f"daily_report_{datetime.now().strftime('%Y%m%d_%H%M')}.png")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(output_path), format="PNG", optimize=True)
-        logger.info(f"市场日报图已生成：{output_path}  ({WIDTH}×{actual_h})")
+        logger.info(f"市场日报图已生成：{output_path}  ({WIDTH}x{actual_h})")
         return output_path

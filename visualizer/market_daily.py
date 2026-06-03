@@ -89,7 +89,15 @@ class FontSet:
         bp = bold_path if (bold_path and os.path.exists(bold_path)) else reg_path
         try:
             def r(s): return ImageFont.truetype(reg_path, s)
-            def b(s): return ImageFont.truetype(bp, s)
+            def b(s):
+                f = ImageFont.truetype(bp, s)
+                # 可变字体需要显式设置 wght=700 才能渲染为粗体
+                if hasattr(f, "set_variation_by_axes"):
+                    try:
+                        f.set_variation_by_axes({"wght": 700})
+                    except Exception:
+                        pass
+                return f
             self.hero        = b(52)
             self.h1          = b(30)
             self.h2          = b(24)
@@ -376,32 +384,74 @@ def _render_header(img: Image.Image, fonts: FontSet, result, rating: Rating) -> 
     return img, H
 
 
-# ── 情绪横幅 ──────────────────────────────────────────────────────────────────
+# ── 情绪横幅（动态高度，根据内容自动调整） ────────────────────────────────
 
-def _render_sentiment(draw: ImageDraw.Draw, fonts: FontSet, y: int, result, rating: Rating) -> int:
-    H = 52
+def _calc_sentiment_h(draw, fonts, result, rating) -> int:
+    """预计算情绪横幅高度（根据文字内容动态调整）"""
+    c = THEME
+    card_w = WIDTH - PAD * 2
+    text_w_max = card_w - 60  # 左侧箭头+间距 + 右侧留白
+
+    sentiment = result.overall_sentiment or ""
+    # 前缀 "市场整体情绪：" 约 8 个中文字
+    prefix = "市场整体情绪："
+    full_text = f"{prefix}{sentiment}" if sentiment else prefix
+
+    # 计算文字行数（动态换行）
+    wrapped = _wrap(full_text, chars=34)
+    lines = wrapped.split("\n")
+    text_lines_h = sum(
+        _text_wh(draw, line, fonts.h3)[1] + 4 for line in lines
+    )
+
+    # 右侧标签高度
+    h_text = result.time_horizon_label or "短期"
+    _, tag_h = _text_wh(draw, h_text, fonts.tag)
+
+    content_h = max(text_lines_h, tag_h + 8)
+    return content_h + 32  # 上下各 16px padding
+
+
+def _render_sentiment(draw: ImageDraw.Draw, fonts: FontSet, y: int, result, rating) -> int:
     c = THEME
     rating_color = _rating_color(rating.score)
     r, g, b = _hex2rgb(rating_color)
 
+    # 动态计算高度
+    H = _calc_sentiment_h(draw, fonts, result, rating)
+    card_w = WIDTH - PAD * 2
+
+    # 绘制背景卡片
     draw.rounded_rectangle([(PAD, y), (WIDTH - PAD, y + H)],
                             radius=6, fill=(r, g, b, 30),
                             outline=rating_color, width=1)
 
-    sentiment = result.overall_sentiment or rating.label
+    # 左侧箭头
     arrow_x = PAD + 16
-    arrow_y = y + 17
-    draw.polygon([(arrow_x, arrow_y - 5), (arrow_x + 8, arrow_y), (arrow_x, arrow_y + 5)],
+    arrow_y = y + H // 2
+    draw.polygon([(arrow_x, arrow_y - 6), (arrow_x + 10, arrow_y), (arrow_x, arrow_y + 6)],
                  fill=rating_color)
-    draw.text((PAD + 32, y + 12), f"市场整体情绪：{sentiment}",
-              font=fonts.h3, fill=c["text_bright"])
 
-    h_text = result.time_horizon_label
-    htw, _ = _text_wh(draw, h_text, fonts.tag)
+    # 情绪文字（自动换行）
+    sentiment = result.overall_sentiment or ""
+    prefix = "市场整体情绪："
+    full_text = f"{prefix}{sentiment}" if sentiment else prefix
+    wrapped = _wrap(full_text, chars=34)
+    text_y = y + 12
+    text_x = PAD + 36
+    for line in wrapped.split("\n"):
+        draw.text((text_x, text_y), line, font=fonts.h3, fill=c["text_bright"])
+        _, lh = _text_wh(draw, line, fonts.h3)
+        text_y += lh + 4
+
+    # 右侧时间维度标签（垂直居中）
+    h_text = result.time_horizon_label or "短期"
+    htw, hth = _text_wh(draw, h_text, fonts.tag)
     hx = WIDTH - htw - PAD - 20
-    draw.rounded_rectangle([(hx - 8, y + 10), (hx + htw + 8, y + H - 10)],
+    tag_y = y + (H - hth - 8) // 2
+    draw.rounded_rectangle([(hx - 8, tag_y), (hx + htw + 8, tag_y + hth + 8)],
                             radius=4, fill=THEME["surface2"], outline=c["border_cyan_dim"])
-    draw.text((hx, y + 14), h_text, font=fonts.tag, fill=c["text_cyan"])
+    draw.text((hx, tag_y + 4), h_text, font=fonts.tag, fill=c["text_cyan"])
 
     return H + 14
 
@@ -419,7 +469,15 @@ def _calc_news_h(draw, fonts, news_list) -> int:
     for i, news in enumerate(news_list[:display_count]):
         total += 24  # 序号 + 来源行
         title = news.get("title", "")
-        wrapped = _wrap(title, chars=28)
+        news_time = news.get("time", "")
+        # 标题行：标题 + 时间（如果有）
+        if news_time and title:
+            # 留出时间标签的空间，标题部分 chars 减 10
+            time_tag = f"  [{news_time}]"
+            title_display = title + time_tag
+            wrapped = _wrap(title_display, chars=30)
+        else:
+            wrapped = _wrap(title, chars=28)
         total += _multiline_h(draw, wrapped, fonts.body, gap=5) + 4
         comment = news.get("comment", "")[:80]
         if comment:
@@ -456,6 +514,7 @@ def _render_news(img: Image.Image, draw: ImageDraw.Draw,
         comment = news.get("comment", "")[:80]
         source  = news.get("source", "")
         impact  = news.get("impact", 3)
+        news_time = news.get("time", "")
 
         num_color = [c["text_muted"], c["border_cyan_dim"],
                      c["text_cyan"], c["text_orange"], c["border_red"]][min(impact - 1, 4)]
@@ -471,9 +530,41 @@ def _render_news(img: Image.Image, draw: ImageDraw.Draw,
 
         cy += 24
 
-        title_w = _wrap(title, chars=28)
-        draw.text((PAD + CARD_PAD + 34, cy), title_w, font=fonts.body, fill=c["text_bright"])
-        th2 = _multiline_h(draw, title_w, fonts.body, gap=5) + 4
+        # 标题 + 时间标签（时间用不同颜色）
+        if news_time and title:
+            title_text = title
+            wrapped_title = _wrap(title_text, chars=30)
+            tw_lines = wrapped_title.split("\n")
+            # 时间标签绘制在标题末尾（第一行或最后行末尾）
+            for j, line in enumerate(tw_lines):
+                lx = PAD + CARD_PAD + 34
+                ly = cy + j * (_text_wh(draw, line, fonts.body)[1] + 5)
+                # 最后一行追加时间
+                if j == len(tw_lines) - 1:
+                    # 绘制标题文字
+                    draw.text((lx, ly), line, font=fonts.body, fill=c["text_bright"])
+                    lw, _ = _text_wh(draw, line, fonts.body)
+                    # 绘制时间标签
+                    time_str = f"  [{news_time}]"
+                    time_x = lx + lw + 2
+                    # 检查是否会超出卡片宽度
+                    max_x = WIDTH - PAD - CARD_PAD - 4
+                    time_w, _ = _text_wh(draw, time_str, fonts.caption)
+                    if time_x + time_w > max_x:
+                        # 放到下一行
+                        ly2 = ly + _text_wh(draw, line, fonts.body)[1] + 5
+                        draw.text((lx, ly2), time_str, font=fonts.caption, fill=c["text_muted"])
+                        title_lines_h = (ly2 - cy) + _text_wh(draw, time_str, fonts.caption)[1] + 5
+                    else:
+                        draw.text((time_x, ly + 3), time_str, font=fonts.caption, fill=c["text_muted"])
+                        title_lines_h = _multiline_h(draw, wrapped_title, fonts.body, gap=5) + 4
+                else:
+                    draw.text((lx, ly), line, font=fonts.body, fill=c["text_bright"])
+            th2 = title_lines_h
+        else:
+            title_w = _wrap(title, chars=28)
+            draw.text((PAD + CARD_PAD + 34, cy), title_w, font=fonts.body, fill=c["text_bright"])
+            th2 = _multiline_h(draw, title_w, fonts.body, gap=5) + 4
         cy += th2
 
         if comment:
@@ -700,7 +791,7 @@ class MarketDailyVisualizer:
 
         # ── 精确估算各区块高度 ──
         header_h    = 190
-        sentiment_h = 66
+        sentiment_h = _calc_sentiment_h(td, fonts, result, rating) + 14
         news_h      = _calc_news_h(td, fonts, result.top_news) + 14
         analysis_h  = _multiline_h(td, _wrap(result.market_summary, 32), fonts.body, 9) + 14 + 28 + 22 + 20 + 14
         sectors_h   = _est_sectors_h(result.hot_sectors) + 72 + 14

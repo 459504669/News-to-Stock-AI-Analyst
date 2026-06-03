@@ -20,7 +20,7 @@
 - hot_sectors：热门受益板块列表（2~5个）
 - hot_stocks：推荐关注标的（5~8个，含代码、名称、逻辑）
 - key_risks：关键风险提示（2~4个）
-- top_news：最重要的10条新闻摘要（每条含标题和一句话点评），按重要性从高到低排序。如果总新闻数不足10条则全部列出。
+- top_news：最重要的10条新闻摘要（每条含标题、一句话点评和发布时间），按重要性从高到低排序。如果总新闻数不足10条则全部列出。time字段格式为"MM-DD HH:MM"。
 - time_horizon：short/medium/long
 - time_horizon_label：短期/中期/长期
 - confidence：0.0~1.0

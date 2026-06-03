@@ -363,7 +363,7 @@ class CailiansheCollector(HttpCollector):
 
 
 class WallstreetcnCollector(HttpCollector):
-    """华尔街见闻（DNS 可能不通，保留备用）"""
+    """华尔街见闻（GFW/DNS 不通，保留代码备用；需代理或CDN访问）"""
     URL = "https://wallstreetcn.com/news/global"
     SELECTORS = [
         ".article-item a",
@@ -568,23 +568,73 @@ class GovCollector(HttpCollector):
 
 
 class JJCKBCollector(HttpCollector):
-    """经济参考报 - 新华社财经媒体"""
-    URL = "http://www.jjckb.cn/"
+    """经济参考报 - 新华社财经媒体（多页面采集提升数量）"""
+    URLS = [
+        "http://www.jjckb.cn/",
+        "http://www.jjckb.cn/xw/",
+        "http://www.jjckb.cn/cj/",
+        "http://www.jjckb.cn/ll/",
+        "http://www.jjckb.cn/gd/",
+    ]
+    URL = URLS[0]
     SELECTORS = [
+        "a[href*='c.html']",
         "h3 a",
         "h2 a",
-        "a[href*='c.html']",
         "a[href*='.html']",
         "ul li a",
         ".news a",
         ".item a",
         ".list a",
-        "li a",
     ]
     SOURCE_NAME = "经济参考报"
-    MAX_ITEMS = 20
+    MAX_ITEMS = 25
     REFERER = "http://www.jjckb.cn/"
     FORCE_ENCODING = "utf-8"
+
+    def _fetch(self) -> list[NewsItem]:
+        """遍历多个子页面采集"""
+        all_items = []
+        seen_titles = set()
+        for url in self.URLS:
+            try:
+                items = self._fetch_single_page(url)
+                for item in items:
+                    key = item.title[:40]
+                    if key not in seen_titles:
+                        seen_titles.add(key)
+                        all_items.append(item)
+            except Exception as e:
+                logger.debug(f"经济参考报 {url}: {e}")
+        return all_items[:self.MAX_ITEMS]
+
+    def _fetch_single_page(self, url: str) -> list[NewsItem]:
+        """采集单个页面"""
+        headers = {}
+        if self.REFERER:
+            headers["Referer"] = self.REFERER
+        resp = self._get(url, headers=headers)
+        if not resp:
+            return []
+        soup = _safe_parse_html(resp, force_encoding=self.FORCE_ENCODING)
+        items = []
+        for selector in self.SELECTORS:
+            elements = soup.select(selector)
+            if elements:
+                for elem in elements[:self.MAX_ITEMS * 3]:
+                    link = elem if elem.name == "a" else elem.find("a")
+                    if not link:
+                        continue
+                    title = link.get_text(strip=True)
+                    href = link.get("href", "")
+                    href = _fix_url(href, url)
+                    if title and href and self._validate_item(title, href):
+                        items.append(self._create_item(title, href))
+                if items:
+                    break
+        if not items:
+            items = self._generic_extract(soup)
+        return items
 
     def _validate_item(self, title: str, href: str) -> bool:
         """经济参考报验证"""
@@ -593,10 +643,13 @@ class JJCKBCollector(HttpCollector):
         # 保留 jjckb.cn 域名下的新闻链接
         if "jjckb.cn" not in href:
             return False
-        # 排除栏目首页、专题页（路径短的非新闻页）
-        if href.count("/") <= 3 and not re.search(r'/\d{8}/', href):
-            return False
-        return True
+        # URL模式: /YYYYMMDD/{32位hash}/c.html
+        if re.search(r'/\d{8}/[a-f0-9]{10,}/c\.html', href):
+            return True
+        # 也接受其他有日期的 .html 链接
+        if re.search(r'/\d{8}/', href) and href.endswith('.html'):
+            return True
+        return False
 
 
 class CSCollector(HttpCollector):
@@ -629,12 +682,12 @@ class CSCollector(HttpCollector):
         if "cs.com.cn" not in href:
             return False
         # URL模式: /{channel}/YYYY/MM/DD/detail_{timestamp}.html
-        # 或其他新闻链接格式
-        if not re.search(r'detail_\d{10,}\.html', href):
-            # 如果不是detail格式，尝试接受其他新闻链接
-            if not any(x in href for x in ['list.html', 'index.html']):
-                # 仍然需要匹配某些新闻模式
-                pass
+        # 必须包含 detail_ 前缀 + 日期路径
+        if not re.search(r'/\d{4}/\d{2}/\d{2}/detail_\d+\.', href):
+            return False
+        # 排除非新闻链接
+        if any(x in href for x in ['list.html', 'index.html', 'node_']):
+            return False
         return True
 
 
@@ -685,33 +738,50 @@ class BanyuetanCollector(HttpCollector):
 
 
 class CankaoCollector(HttpCollector):
-    """参考消息 - 新华社国际资讯（使用首页，放宽验证）"""
+    """参考消息 - 新华社国际资讯（整站纯JS渲染，requests无法采集，保留备用）
+    TODO: 如需启用，需切换到浏览器自动化方案（playwright/selenium）
+    """
     URL = "http://www.cankaoxiaoxi.com/"
+    SOURCE_NAME = "参考消息"
+    MAX_ITEMS = 15
+
+    def fetch(self) -> list[NewsItem]:
+        """当前无法采集，返回空列表"""
+        logger.info(f"{self.SOURCE_NAME}: 整站JS渲染，requests无法采集，跳过")
+        return []
+
+
+class HuanqiuCollector(HttpCollector):
+    """环球网 - 国际新闻/财经（替代参考消息）"""
+    URL = "https://world.huanqiu.com/"
     SELECTORS = [
-        "a[href*='.shtml']",
-        "a[href*='.html']",
         "h3 a",
         "h2 a",
-        "ul li a",
-        ".news a",
+        "a[href*='.html']",
+        "a[href*='article']",
+        ".news-item a",
         ".item a",
         ".list a",
         ".title a",
+        "ul li a",
     ]
-    SOURCE_NAME = "参考消息"
+    SOURCE_NAME = "环球网"
     MAX_ITEMS = 15
-    REFERER = "http://www.cankaoxiaoxi.com/"
+    REFERER = "https://www.huanqiu.com/"
 
     def _validate_item(self, title: str, href: str) -> bool:
-        """参考消息验证"""
+        """环球网验证"""
         if not super()._validate_item(title, href):
             return False
-        # 只保留 cankaoxiaoxi.com 域名
-        if "cankaoxiaoxi.com" not in href:
+        # 只取 huanqiu.com 域名下的新闻
+        if "huanqiu.com" not in href:
             return False
-        # 排除首页、频道首页、index页面
-        if href.endswith("/") or "index" in href:
-            return False
+        # 排除导航/聚合页
+        exclude = ["index.html", "#", "/tag/", "/video/",
+                   "comment", "download", "app"]
+        for ex in exclude:
+            if ex in href:
+                return False
         return True
 
 
@@ -736,6 +806,7 @@ def get_all_collectors() -> list[BaseCollector]:
         CSCollector(),                # 中国证券报（v0.3.0新增）
         CNStockCollector(),           # 上海证券报（v0.3.0新增）
         BanyuetanCollector(),         # 半月谈（v0.3.0新增）
-        CankaoCollector(),            # 参考消息（v0.3.0新增）
-        WallstreetcnCollector(),      # 华尔街见闻（可能 DNS 不通，放最后）
+        CankaoCollector(),            # 参考消息（JS渲染，暂不可用，保留备用）
+        HuanqiuCollector(),           # 环球网（v0.3.1新增，替代参考消息）
+        WallstreetcnCollector(),      # 华尔街见闻（GFW，需代理）
     ]

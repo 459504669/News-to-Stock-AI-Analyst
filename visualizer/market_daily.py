@@ -1,6 +1,6 @@
 """
-市场日报图生成器 v3.1 - 金融终端暗黑 Neon 风格
-v3.1: 精确卡片高度 + 独立程序图标 + 修复框线错位
+市场日报图生成器 v4.0 - 金融终端暗黑 Neon 风格
+v4.0: 新闻情绪染色 + 推荐标的动态布局 + AI置信度分级着色
 """
 import textwrap
 import math
@@ -44,6 +44,7 @@ THEME = {
     "text_white":      "#FFFFFF",
     "text_dim":        "#1E4060",
     "text_muted":      "#2A5070",
+    "text_purple":     "#B388FF",
 
     # 评级色（A股：红=涨/利好，绿=跌/利空）
     "rating_5":        "#FF1744",
@@ -70,6 +71,18 @@ THEME = {
     "header_bot":      "#091530",
     "header_accent":   "#00E5FF",
 
+    # 新闻情绪色彩（A股惯例：红=利好，绿=利空）
+    "news_positive":    "#FF5252",
+    "news_positive_c":  "#FF8A80",
+    "news_negative":    "#69F0AE",
+    "news_negative_c":  "#B9F6CA",
+    "news_neutral":     "#B0BEC5",
+
+    # 推荐等级色彩
+    "rec_strong":       "#FF1744",
+    "rec_good":         "#FF9100",
+    "rec_normal":       "#FFD600",
+
     # 警示
     "warning_bg":      "#100A00",
     "warning_border":  "#FF6D00",
@@ -79,6 +92,26 @@ THEME = {
 
 def _rating_color(score: int) -> str:
     return THEME.get(f"rating_{score}", THEME["neutral"])
+
+
+def _sentiment_color(sentiment: str) -> Tuple[str, str]:
+    """根据新闻情绪返回 (标题颜色, 评论颜色)"""
+    mapping = {
+        "positive": (THEME["news_positive"], THEME["news_positive_c"]),
+        "negative": (THEME["news_negative"], THEME["news_negative_c"]),
+        "neutral":  (THEME["news_neutral"], THEME["text_cyan"]),
+    }
+    return mapping.get(sentiment, (THEME["text_bright"], THEME["text_cyan"]))
+
+
+def _conf_level(conf: float) -> Tuple[str, str, str]:
+    """根据推荐置信度返回 (边框颜色, 文字颜色, 等级标签)"""
+    if conf >= 0.85:
+        return THEME["border_red"], THEME["rec_strong"], "强烈推荐"
+    elif conf >= 0.70:
+        return THEME["border_orange"], THEME["rec_good"], "比较推荐"
+    else:
+        return THEME["border_gold"], THEME["rec_normal"], "一般推荐"
 
 
 # ── 字体工厂 ──────────────────────────────────────────────────────────────────
@@ -347,9 +380,25 @@ def _render_header(img: Image.Image, fonts: FontSet, result, rating: Rating) -> 
     draw.text((PAD, 22), "AI MARKET TERMINAL", font=fonts.h3, fill=c["text_cyan"])
     draw.text((PAD, 52), "市场日报", font=fonts.hero, fill=c["text_white"])
 
+    # 顶部居中：开发者信息（分两行）
+    dev_line1 = "开发者：笠神"
+    dev_line2 = "商务合作邮箱：x459504669@qq.com"
+    lw1, lh1 = _text_wh(draw, dev_line1, fonts.caption)
+    lw2, lh2 = _text_wh(draw, dev_line2, fonts.caption)
+    cx = WIDTH // 2
+    draw.text((cx - lw1 // 2, 22), dev_line1, font=fonts.caption, fill=c["text_purple"])
+    draw.text((cx - lw2 // 2, 40), dev_line2, font=fonts.caption, fill=c["text_purple"])
+
     now_str = datetime.now().strftime("%Y-%m-%d  %H:%M")
     draw.text((PAD, 116), now_str, font=fonts.body_sm, fill=c["text_cyan"])
-    draw.text((PAD, 140), f"基于 {result.news_count} 条新闻分析", font=fonts.caption, fill=c["text_muted"])
+    # 新闻统计（两行显示）
+    if result.total_count and result.total_count != result.news_count:
+        stats_line1 = f"一共抓取 {result.total_count} 条新闻"
+        stats_line2 = f"基于AI筛选 {result.news_count} 条重要新闻分析"
+        draw.text((PAD, 136), stats_line1, font=fonts.caption, fill=c["text_cyan"])
+        draw.text((PAD, 156), stats_line2, font=fonts.caption, fill=c["text_cyan"])
+    else:
+        draw.text((PAD, 140), f"基于 {result.news_count} 条新闻分析", font=fonts.caption, fill=c["text_cyan"])
 
     # 右侧：评级胶囊（精确居中）
     rating_color = _rating_color(rating.score)
@@ -515,6 +564,8 @@ def _render_news(img: Image.Image, draw: ImageDraw.Draw,
         source  = news.get("source", "")
         impact  = news.get("impact", 3)
         news_time = news.get("time", "")
+        sentiment = news.get("sentiment", "neutral")
+        title_color, comment_color = _sentiment_color(sentiment)
 
         num_color = [c["text_muted"], c["border_cyan_dim"],
                      c["text_cyan"], c["text_orange"], c["border_red"]][min(impact - 1, 4)]
@@ -539,10 +590,10 @@ def _render_news(img: Image.Image, draw: ImageDraw.Draw,
             for j, line in enumerate(tw_lines):
                 lx = PAD + CARD_PAD + 34
                 ly = cy + j * (_text_wh(draw, line, fonts.body)[1] + 5)
+                # 绘制标题文字（情绪染色）
+                draw.text((lx, ly), line, font=fonts.body, fill=title_color)
                 # 最后一行追加时间
                 if j == len(tw_lines) - 1:
-                    # 绘制标题文字
-                    draw.text((lx, ly), line, font=fonts.body, fill=c["text_bright"])
                     lw, _ = _text_wh(draw, line, fonts.body)
                     # 绘制时间标签
                     time_str = f"  [{news_time}]"
@@ -558,18 +609,16 @@ def _render_news(img: Image.Image, draw: ImageDraw.Draw,
                     else:
                         draw.text((time_x, ly + 3), time_str, font=fonts.caption, fill=c["text_muted"])
                         title_lines_h = _multiline_h(draw, wrapped_title, fonts.body, gap=5) + 4
-                else:
-                    draw.text((lx, ly), line, font=fonts.body, fill=c["text_bright"])
             th2 = title_lines_h
         else:
             title_w = _wrap(title, chars=28)
-            draw.text((PAD + CARD_PAD + 34, cy), title_w, font=fonts.body, fill=c["text_bright"])
+            draw.text((PAD + CARD_PAD + 34, cy), title_w, font=fonts.body, fill=title_color)
             th2 = _multiline_h(draw, title_w, fonts.body, gap=5) + 4
         cy += th2
 
         if comment:
             cmt_w = _wrap(f"  -> {comment}", chars=32)
-            draw.text((PAD + CARD_PAD + 34, cy), cmt_w, font=fonts.body_sm, fill=c["text_cyan"])
+            draw.text((PAD + CARD_PAD + 34, cy), cmt_w, font=fonts.body_sm, fill=comment_color)
             cy += _multiline_h(draw, cmt_w, fonts.body_sm, gap=4) + 2
 
         cy += 10
@@ -662,16 +711,59 @@ def _render_sectors(img: Image.Image, draw: ImageDraw.Draw,
     return img, draw, card_h + 14
 
 
-# ── 推荐标的区块 ──────────────────────────────────────────────────────────────
+# ── 推荐标的区块（动态高度 + 居中 + 等级着色） ──────────────────────────────
+
+def _calc_stock_card_h(draw, fonts, stock, col_w: int) -> int:
+    """计算单个推荐标的卡片高度（根据文字内容动态调整）"""
+    logic = stock.get("logic", "")[:80]
+    # Header 行：序号 + 代码/名称 ≈ 28px
+    header_h = 28
+    # 进度条行：进度条 + 百分比 + 等级标签 ≈ 22px
+    bar_h = 22
+    # Logic 文字（动态行数）
+    logic_h = 0
+    if logic:
+        wrapped = _wrap(logic, chars=19)
+        logic_h = _multiline_h(draw, wrapped, fonts.caption, gap=3) + 8
+    return header_h + bar_h + logic_h + 14
+
+
+def _calc_stocks_h(draw, fonts, stocks: list) -> int:
+    """预计算推荐标的区块总高度"""
+    stock_list = stocks[:8]
+    if not stock_list:
+        return 80
+    card_w = WIDTH - PAD * 2
+    col_w = (card_w - CARD_PAD * 2 - 8) // 2
+    card_heights = [_calc_stock_card_h(draw, fonts, s, col_w) for s in stock_list]
+    rows = math.ceil(len(stock_list) / 2)
+    row_heights = []
+    for r in range(rows):
+        i1, i2 = r * 2, r * 2 + 1
+        h1 = card_heights[i1] if i1 < len(card_heights) else 0
+        h2 = card_heights[i2] if i2 < len(card_heights) else 0
+        row_heights.append(max(h1, h2))
+    return sum(row_heights) + (rows - 1) * 8 + 80
 
 def _render_stocks(img: Image.Image, draw: ImageDraw.Draw,
                     fonts: FontSet, y: int, stocks: list) -> Tuple:
     c = THEME
     card_w = WIDTH - PAD * 2
     stock_list = stocks[:8]
+    col_w = (card_w - CARD_PAD * 2 - 8) // 2
+
+    # 第一遍：计算每个卡片高度
+    card_heights = [_calc_stock_card_h(draw, fonts, s, col_w) for s in stock_list]
+    # 两列布局，每行取最大高度
     rows = math.ceil(len(stock_list) / 2)
-    sub_h = 88
-    card_h = rows * (sub_h + 8) + 80
+    row_heights = []
+    for r in range(rows):
+        i1, i2 = r * 2, r * 2 + 1
+        h1 = card_heights[i1] if i1 < len(card_heights) else 0
+        h2 = card_heights[i2] if i2 < len(card_heights) else 0
+        row_heights.append(max(h1, h2))
+
+    card_h = sum(row_heights) + (rows - 1) * 8 + 80
 
     img = _draw_neon_card_with_shadow(img, PAD, y, card_w, card_h,
                                        border_color=c["border_orange"])
@@ -681,40 +773,67 @@ def _render_stocks(img: Image.Image, draw: ImageDraw.Draw,
                             "推荐关注标的", "stocks", c["text_orange"], c["border_orange"], fonts)
     _draw_neon_divider(draw, PAD + 12, y + 14 + th + 8, card_w - 24, c["border_orange"])
 
-    col_w = (card_w - CARD_PAD * 2 - 8) // 2
     sy0 = y + 14 + th + 20
+
+    # 累计 y 偏移（支持动态行高）
+    row_y_offsets = [0]
+    for r in range(rows - 1):
+        row_y_offsets.append(row_y_offsets[-1] + row_heights[r] + 8)
 
     for i, stock in enumerate(stock_list):
         col = i % 2
         row = i // 2
         sx = PAD + CARD_PAD + col * (col_w + 8)
-        sy = sy0 + row * (sub_h + 8)
+        row_h = row_heights[row]
+        my_h = card_heights[i]
+        sy = sy0 + row_y_offsets[row]
+
+        # 卡片内垂直居中偏移
+        y_offset = (row_h - my_h) // 2 if row_h > my_h else 0
+        sy_inner = sy + y_offset
 
         code   = stock.get("code", "")
         name   = stock.get("name", "")
-        logic  = stock.get("logic", "")[:36]
+        logic  = stock.get("logic", "")[:80]
         conf   = stock.get("confidence", 0.7)
 
-        _draw_neon_card(draw, sx, sy, col_w, sub_h,
-                        border_color=c["border_orange"],
+        # 根据置信度确定颜色等级
+        border_c, text_c, level_label = _conf_level(conf)
+
+        # 绘制卡片背景（边框颜色随等级变化）
+        _draw_neon_card(draw, sx, sy, col_w, row_h,
+                        border_color=border_c,
                         fill_color=c["surface2"], radius=6, border_width=1)
 
-        draw.text((sx + 8, sy + 8), f"{i + 1:02d}", font=fonts.caption, fill=c["text_orange"])
+        # 序号
+        draw.text((sx + 8, sy_inner + 8), f"{i + 1:02d}", font=fonts.caption, fill=text_c)
 
+        # 代码 + 名称
         header = f"{code}  {name}" if code else name
-        draw.text((sx + 36, sy + 6), header, font=fonts.h3, fill=c["text_white"])
+        draw.text((sx + 36, sy_inner + 6), header, font=fonts.h3, fill=c["text_white"])
 
+        # 进度条 + 百分比 + 等级标签
         bar_w = col_w - 48
-        _draw_neon_bar(draw, sx + 36, sy + 35, bar_w, 6, conf,
+        _draw_neon_bar(draw, sx + 36, sy_inner + 35, bar_w, 6, conf,
                        c1=c["bar_bull"], c2=c["bar_bull_end"])
         conf_text = f"{int(conf * 100)}%"
         ctw, _ = _text_wh(draw, conf_text, fonts.caption)
-        draw.text((sx + col_w - ctw - 8, sy + 30), conf_text,
-                  font=fonts.caption, fill=c["text_orange"])
+        draw.text((sx + col_w - ctw - 8, sy_inner + 30), conf_text,
+                  font=fonts.caption, fill=text_c)
+        # 等级标签
+        lw, _ = _text_wh(draw, level_label, fonts.caption)
+        if sx + 36 + lw < sx + col_w - ctw - 12:
+            draw.text((sx + 36, sy_inner + 44), level_label,
+                      font=fonts.caption, fill=text_c)
 
+        # 推荐逻辑（动态换行，不截断）
         if logic:
-            draw.text((sx + 8, sy + 52), _wrap(logic, chars=19),
-                      font=fonts.caption, fill=c["text_cyan"])
+            logic_y = sy_inner + 62
+            wrapped_logic = _wrap(logic, chars=19)
+            for line in wrapped_logic.split("\n"):
+                draw.text((sx + 8, logic_y), line, font=fonts.caption, fill=c["text_cyan"])
+                _, lh = _text_wh(draw, line, fonts.caption)
+                logic_y += lh + 3
 
     return img, draw, card_h + 14
 
@@ -795,7 +914,7 @@ class MarketDailyVisualizer:
         news_h      = _calc_news_h(td, fonts, result.top_news) + 14
         analysis_h  = _multiline_h(td, _wrap(result.market_summary, 32), fonts.body, 9) + 14 + 28 + 22 + 20 + 14
         sectors_h   = _est_sectors_h(result.hot_sectors) + 72 + 14
-        stocks_h    = (math.ceil(min(8, len(result.hot_stocks)) / 2) * 96) + 94
+        stocks_h    = _calc_stocks_h(td, fonts, result.hot_stocks)
         risks_h     = _calc_risks_h(td, fonts, result.key_risks) + 14
         footer_h    = 50
 

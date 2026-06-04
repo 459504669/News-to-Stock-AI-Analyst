@@ -71,7 +71,7 @@ def _load_latest_report(path: Path) -> dict:
 app = FastAPI(
     title="News-to-Stock AI Analyst API",
     description="AI 驱动的实时新闻股市分析工具 API - 自动抓取新闻、分析市场影响、生成日报图",
-    version="0.3.1",
+    version="0.4.0",
     lifespan=lifespan,
 )
 

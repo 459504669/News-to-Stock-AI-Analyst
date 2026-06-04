@@ -15,6 +15,7 @@ v0.3.0 更新：
 """
 import re
 from datetime import datetime, timedelta
+from typing import Optional
 from urllib.parse import urljoin
 from loguru import logger
 from bs4 import BeautifulSoup
@@ -22,6 +23,142 @@ from ..base import BaseCollector, NewsItem
 
 
 # ==================== 通用工具 ====================
+
+def _extract_time_from_url(href: str) -> Optional[datetime]:
+    """从新闻URL中提取发布日期（绝大部分中文新闻网站URL包含日期）。
+    时分秒统一设为00:00:00，表示仅知道日期、不知道精确时间。"""
+    if not href:
+        return None
+
+    # 模式1: /YYYY/MM/DD/  (人民网、中国证券报、经济参考报等)
+    m = re.search(r'/(\d{4})/(\d{1,2})/(\d{1,2})/', href)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), 0, 0, 0)
+        except ValueError:
+            pass
+
+    # 模式2: /YYYY-MM-DD  (财新、上海证券报、环球网等)
+    m = re.search(r'/(\d{4})-(\d{2})-(\d{2})', href)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), 0, 0, 0)
+        except ValueError:
+            pass
+
+    # 模式3: /YYYYMMDD + 额外数字  (东方财富 a/202606043123456.html、证券时报)
+    m = re.search(r'/(\d{8})(?:\d{2,}|_|\.)', href)
+    if m:
+        s = m.group(1)
+        try:
+            return datetime(int(s[:4]), int(s[4:6]), int(s[6:8]), 0, 0, 0)
+        except ValueError:
+            pass
+
+    # 模式4: /YYYYMMDD.html 或 /YYYYMMDD.shtml (新浪财经)
+    m = re.search(r'/(\d{8})\.(?:s?htm)', href)
+    if m:
+        s = m.group(1)
+        try:
+            return datetime(int(s[:4]), int(s[4:6]), int(s[6:8]), 0, 0, 0)
+        except ValueError:
+            pass
+
+    return None
+
+
+def _try_extract_time(elem) -> Optional[datetime]:
+    """从元素或其父/兄弟节点中提取发布时间"""
+    if elem is None:
+        return None
+
+    # 常见时间选择器（按优先级）
+    time_selectors = [
+        ".time", ".date", ".pub-time", ".publish-time",
+        "span.time", "span.date", "em.time", "i.time",
+        ".news-time", ".meta-time", ".post-time",
+        "[data-time]", "[data-pubtime]",
+    ]
+
+    # 1. 在当前元素内查找
+    parent = elem.parent if hasattr(elem, "parent") else None
+    for sel in time_selectors:
+        if hasattr(elem, "select"):
+            t = elem.select_one(sel)
+            if t:
+                return _parse_time_text(t.get_text(strip=True))
+        if parent and hasattr(parent, "select"):
+            t = parent.select_one(sel)
+            if t:
+                return _parse_time_text(t.get_text(strip=True))
+
+    # 2. 在兄弟节点中查找（前一个/后一个）
+    if parent:
+        for sibling in list(parent.children):
+            if sibling is elem:
+                continue
+            if hasattr(sibling, "get_text"):
+                txt = sibling.get_text(strip=True)
+                if txt and len(txt) < 30:
+                    parsed = _parse_time_text(txt)
+                    if parsed:
+                        return parsed
+
+    # 3. 在祖父节点中查找
+    if parent and parent.parent and hasattr(parent.parent, "select"):
+        for sel in time_selectors[:4]:
+            t = parent.parent.select_one(sel)
+            if t:
+                return _parse_time_text(t.get_text(strip=True))
+
+    return None
+
+
+def _parse_time_text(text: str) -> Optional[datetime]:
+    """解析中文网页常见时间格式"""
+    if not text:
+        return None
+
+    now = datetime.now()
+    text = text.strip().replace("\n", " ")
+
+    # 匹配 "今天 HH:MM"
+    m = re.search(r'今天\s*(\d{1,2}):(\d{2})', text)
+    if m:
+        return now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0)
+
+    # 匹配 "MM-DD HH:MM" 或 "MM月DD日 HH:MM"
+    m = re.search(r'(\d{1,2})[\-/月](\d{1,2})[日\s]*(?:\s+(\d{1,2}):(\d{2}))?', text)
+    if m:
+        month, day = int(m.group(1)), int(m.group(2))
+        hour = int(m.group(3)) if m.group(3) else now.hour
+        minute = int(m.group(4)) if m.group(4) else now.minute
+        year = now.year
+        # 处理跨年（如果月份大于当前月，可能是去年）
+        if month > now.month + 1:
+            year -= 1
+        try:
+            return datetime(year, month, day, hour, minute, 0)
+        except ValueError:
+            pass
+
+    # 匹配 "HH:MM"（仅时间，假设今天）
+    m = re.search(r'(\d{1,2}):(\d{2})', text)
+    if m:
+        return now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0)
+
+    # 匹配 "X分钟前" / "X小时前"
+    m = re.search(r'(\d+)\s*分钟前', text)
+    if m:
+        return now - timedelta(minutes=int(m.group(1)))
+    m = re.search(r'(\d+)\s*小时前', text)
+    if m:
+        return now - timedelta(hours=int(m.group(1)))
+
+    return None
+
+
+
 
 NAV_BLACKLIST = {
     "首页", "关于", "关于我们", "联系我们", "登录", "注册",
@@ -192,7 +329,7 @@ class HttpCollector(BaseCollector):
                     href = link.get("href", "")
                     href = _fix_url(href, self.URL)
                     if title and href and self._validate_item(title, href):
-                        items.append(self._create_item(title, href))
+                        items.append(self._create_item(title, href, elem=link))
                 if items:
                     break
 
@@ -226,7 +363,7 @@ class HttpCollector(BaseCollector):
                 continue
             seen.add(key)
 
-            items.append(self._create_item(title, href))
+            items.append(self._create_item(title, href, elem=link))
 
             if len(items) >= self.MAX_ITEMS:
                 break
@@ -243,15 +380,22 @@ class HttpCollector(BaseCollector):
             return False
         return True
 
-    def _create_item(self, title: str, href: str) -> NewsItem:
-        """创建 NewsItem"""
+    def _create_item(self, title: str, href: str, elem=None) -> NewsItem:
+        """创建 NewsItem，多策略提取真实发布时间"""
+        # 优先级：URL日期 > HTML时间元素 > fallback
+        pub_time = _extract_time_from_url(href)
+        if pub_time is None:
+            pub_time = _try_extract_time(elem)
+        if pub_time is None:
+            pub_time = datetime.now()
+
         return NewsItem(
             title=title,
             summary=title[:300],
             content=title,
             source=self.SOURCE_NAME,
             url=href,
-            published_at=datetime.now(),
+            published_at=pub_time,
         )
 
 
@@ -629,7 +773,7 @@ class JJCKBCollector(HttpCollector):
                     href = link.get("href", "")
                     href = _fix_url(href, url)
                     if title and href and self._validate_item(title, href):
-                        items.append(self._create_item(title, href))
+                        items.append(self._create_item(title, href, elem=link))
                 if items:
                     break
         if not items:

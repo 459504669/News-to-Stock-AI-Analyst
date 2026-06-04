@@ -4,10 +4,14 @@
 """
 import sys
 import os
+import time
+import random
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
 from loguru import logger
 
 # 确保项目根目录在 path 中
@@ -79,25 +83,60 @@ def run_daily_pipeline(theme: str = "light") -> Path:
     logger.info("开始每日分析流程")
     logger.info("=" * 60)
 
-    # Step 1: 并发抓取新闻
+    # Step 1: 分域名分组并发抓取新闻（避免同一域名高频请求触发反爬）
     logger.info("[1/4] 正在从各新闻源并发抓取新闻...")
     collectors = get_all_collectors()
     all_news = []
 
-    # 使用线程池并发采集，每个采集器独立Session，全并发执行
-    with ThreadPoolExecutor(max_workers=len(collectors)) as executor:
-        future_to_name = {
-            executor.submit(_fetch_one, c): c.SOURCE_NAME
-            for c in collectors
-        }
-        for future in as_completed(future_to_name, timeout=90):
-            name = future_to_name[future]
+    # 按域名分组（同域名的采集器串行，间隔1-2秒；不同域名可并发）
+    domain_groups = defaultdict(list)
+    for c in collectors:
+        url = getattr(c, "URL", "") or ""
+        parsed = urlparse(url)
+        domain = parsed.netloc or parsed.path or "unknown"
+        # 提取主域名（去掉 www. 和多余子域名）
+        parts = domain.split(".")
+        if len(parts) >= 2:
+            # 如 www.sina.com.cn → sina.com.cn, people.com.cn → people.com.cn
+            if len(parts) >= 3 and parts[0] == "www":
+                main_domain = ".".join(parts[1:])
+            else:
+                main_domain = ".".join(parts[-2:]) if len(parts) >= 2 else domain
+        else:
+            main_domain = domain
+        domain_groups[main_domain].append(c)
+
+    logger.info(f"  共 {len(collectors)} 个采集器，分 {len(domain_groups)} 个域名组")
+
+    for idx, (domain, group_collectors) in enumerate(domain_groups.items()):
+        group_name = domain if len(domain) < 30 else domain[:27] + "..."
+        logger.info(f"  [{group_name}] {len(group_collectors)} 个采集器...")
+
+        # 同域名组内：如果有多个采集器，顺序执行并加间隔
+        if len(group_collectors) > 1:
+            for i, c in enumerate(group_collectors):
+                try:
+                    items = _fetch_one(c)
+                    all_news.extend(items)
+                    logger.info(f"    {c.SOURCE_NAME}: +{len(items)} 条")
+                except Exception as e:
+                    logger.warning(f"    {c.SOURCE_NAME}: {e}")
+                # 同域名下一个请求前随机等待 0.8-1.5 秒
+                if i < len(group_collectors) - 1:
+                    time.sleep(0.8 + random.random() * 0.7)
+        else:
+            # 单个采集器直接执行
+            c = group_collectors[0]
             try:
-                items = future.result(timeout=20)
+                items = _fetch_one(c)
                 all_news.extend(items)
-                logger.info(f"  {name}: +{len(items)} 条")
+                logger.info(f"    {c.SOURCE_NAME}: +{len(items)} 条")
             except Exception as e:
-                logger.warning(f"  {name}: 超时或异常: {e}")
+                logger.warning(f"    {c.SOURCE_NAME}: {e}")
+
+        # 不同域名组之间随机间隔 0.3-0.8 秒（最后一个组不加）
+        if idx < len(domain_groups) - 1:
+            time.sleep(0.3 + random.random() * 0.5)
 
     logger.info(f"原始抓取: {len(all_news)} 条")
 

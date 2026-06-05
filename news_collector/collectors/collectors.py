@@ -436,8 +436,17 @@ class EastmoneyCollector(HttpCollector):
 
 
 class HexunCollector(HttpCollector):
-    """和讯网 - 新闻频道"""
-    URL = "https://news.hexun.com/"
+    """和讯网 - 股票/财经新闻
+    news.hexun.com 首页有反爬JS（requests拿到混淆脚本），
+    改用 stock.hexun.com 和 finance.hexun.com 子频道（curl/requests均可正常访问）。
+    链接格式：https://stock.hexun.com/YYYY-MM-DD/XXXXXXXXXX.html
+    """
+    # 多个可正常访问的子频道 URL
+    CHANNEL_URLS = [
+        "https://stock.hexun.com/",    # 股票频道（可直接访问）
+        "https://finance.hexun.com/",  # 财经频道
+    ]
+    URL = "https://stock.hexun.com/"
     SELECTORS = [
         "li a[href*='.html']",
         ".news-item a",
@@ -452,23 +461,118 @@ class HexunCollector(HttpCollector):
     REFERER = "https://www.hexun.com/"
     FORCE_ENCODING = "gbk"  # 和讯网使用 GBK 编码
 
+    def fetch(self) -> list[NewsItem]:
+        """整站腾讯云 WAF 反爬，requests 无法绕过，保留代码备用"""
+        reason = "整站启用腾讯云 WAF 验证码（__TENCENT_CHAOS_VM），requests 均返回反爬 JS"
+        suggestion = "TODO: 如需启用，需切换到浏览器自动化方案（playwright / selenium）"
+        # 直接调 _fetch()，避开基类 fetch() 的重复日志
+        try:
+            items = self._fetch()
+        except Exception:
+            items = []
+        if not items:
+            logger.warning(f"{self.SOURCE_NAME}: 返回 0 条 —— {reason}；{suggestion}")
+        else:
+            logger.info(f"{self.SOURCE_NAME}: 抓取 {len(items)} 条（注意：部分网络环境下整站反爬，可能返回 0 条）")
+        return items
+
+    def _fetch(self) -> list[NewsItem]:
+        """从多个子频道聚合，跳过有反爬JS的主频道"""
+        all_items = []
+        seen_hrefs: set = set()
+        seen_titles: set = set()
+
+        for chan_url in self.CHANNEL_URLS:
+            try:
+                resp = self._get(chan_url, headers={"Referer": self.REFERER}, timeout=10)
+                soup = _safe_parse_html(resp, force_encoding=self.FORCE_ENCODING)
+            except Exception as e:
+                logger.debug(f"{self.SOURCE_NAME}: 频道 {chan_url} 请求失败: {e}")
+                continue
+
+            # 优先用精准选择器
+            found = []
+            for selector in self.SELECTORS:
+                try:
+                    elements = soup.select(selector)
+                except Exception:
+                    continue
+                if elements:
+                    for elem in elements[:self.MAX_ITEMS * 2]:
+                        link = elem if elem.name == "a" else elem.find("a")
+                        if not link:
+                            continue
+                        title = link.get_text(strip=True)
+                        href = link.get("href", "")
+                        href = _fix_url(href, chan_url)
+                        if (title and href
+                                and href not in seen_hrefs
+                                and self._validate_item(title, href)):
+                            seen_hrefs.add(href)
+                            seen_titles.add(title[:40])
+                            found.append(self._create_item(title, href, elem=link))
+                    if found:
+                        break
+
+            # fallback：通用提取
+            if not found:
+                for link in soup.find_all("a", href=True):
+                    href = _fix_url(link.get("href", ""), chan_url)
+                    title = link.get_text(strip=True)
+                    if (title and href
+                            and href not in seen_hrefs
+                            and self._validate_item(title, href)):
+                        seen_hrefs.add(href)
+                        found.append(self._create_item(title, href, elem=link))
+
+            all_items.extend(found)
+            if len(all_items) >= self.MAX_ITEMS:
+                break
+
+        logger.info(f"{self.SOURCE_NAME}: 抓取 {len(all_items)} 条")
+        return all_items[:self.MAX_ITEMS]
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """验证：必须是 hexun.com 子域下的日期型链接"""
+        if not super()._validate_item(title, href):
+            return False
+        # 只保留 hexun.com 域名
+        if "hexun.com" not in href:
+            return False
+        # 排除导航/聚合页
+        for kw in ["index.html", "xjhyzx", "jrds", "dsfzf"]:
+            if kw in href:
+                return False
+        return True
+
 
 class YicaiCollector(HttpCollector):
-    """第一财经"""
+    """第一财经 - 链接格式 /news/1XXXXXXXXX.html"""
     URL = "https://www.yicai.com/"
+    # 第一财经新闻 URL 格式：/news/103216185.html 或 https://www.yicai.com/news/xxx.html
     SELECTORS = [
-        ".m-list a",
+        "a[href*='/news/']",   # 精准匹配，覆盖所有新闻链接
         ".f-ff1 a",
-        ".news-list a",
-        ".item a",
+        ".m-list a",
         "h2 a",
         "h3 a",
-        ".txt a",
-        ".list-item a",
     ]
     SOURCE_NAME = "第一财经"
     MAX_ITEMS = 15
     REFERER = "https://www.yicai.com/"
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        """重写：只保留 /news/ 路径下的链接，排除专题/视频/图片页"""
+        if not super()._validate_item(title, href):
+            return False
+        # 必须包含 /news/
+        if "/news/" not in href:
+            return False
+        # 排除非新闻页（视频、图集、直播等）
+        for kw in ["/video/", "/photo/", "/live/", "/topic/", "/special/"]:
+            if kw in href:
+                return False
+        return True
 
 
 class STCNCollector(HttpCollector):
@@ -490,20 +594,64 @@ class STCNCollector(HttpCollector):
 
 
 class CailiansheCollector(HttpCollector):
-    """财联社 - 首页要闻（电报页需要JS渲染，改用首页）"""
-    URL = "https://www.cls.cn/"
-    SELECTORS = [
-        "a[href*='/detail/']",
-        ".telegraph-content a",
-        ".content a",
-        "h3 a",
-        "h2 a",
-        ".news-item a",
-        ".item a",
+    """财联社 - 通过多个话题页（SSR渲染）聚合新闻，绕过电报页JS渲染"""
+    # 话题页是服务端渲染的，能直接拿到新闻标题+链接
+    # 覆盖 A股、科技、宏观、美股等主要方向
+    SUBJECT_URLS = [
+        "https://www.cls.cn/subject/1556",  # 环球市场情报
+        "https://www.cls.cn/subject/3140",  # 美联储动态
+        "https://www.cls.cn/subject/3018",  # 科技前沿
+        "https://www.cls.cn/subject/3001",  # A股市场
     ]
+    URL = "https://www.cls.cn/telegraph"
+    SELECTORS = []
     SOURCE_NAME = "财联社"
-    MAX_ITEMS = 20
+    MAX_ITEMS = 25
     REFERER = "https://www.cls.cn/"
+
+    def _fetch(self) -> list[NewsItem]:
+        """通过话题页聚合新闻（话题页是 SSR 渲染的，不需要 JS）"""
+        all_items = []
+        seen_titles = set()
+        seen_hrefs = set()
+
+        for subject_url in self.SUBJECT_URLS:
+            try:
+                resp = self._get(subject_url, headers={"Referer": self.URL}, timeout=10)
+                soup = _safe_parse_html(resp)
+            except Exception as e:
+                logger.debug(f"{self.SOURCE_NAME}: 话题页 {subject_url} 请求失败: {e}")
+                continue
+
+            # 提取所有 href="/detail/xxx" 的链接
+            for link in soup.find_all("a", href=True):
+                href = link.get("href", "")
+                if "/detail/" not in href:
+                    continue
+                # 修正为完整 URL
+                full_href = _fix_url(href, "https://www.cls.cn")
+                if full_href in seen_hrefs:
+                    continue
+
+                title = link.get_text(strip=True)
+                if not title or len(title) < 8 or len(title) > 120:
+                    continue
+                if _is_nav_link(title, full_href):
+                    continue
+
+                title_key = title[:40]
+                if title_key in seen_titles:
+                    continue
+
+                seen_titles.add(title_key)
+                seen_hrefs.add(full_href)
+                all_items.append(self._create_item(title, full_href, elem=link))
+
+            if len(all_items) >= self.MAX_ITEMS:
+                break
+
+        logger.info(f"{self.SOURCE_NAME}: 抓取 {len(all_items)} 条（话题页聚合）")
+        return all_items[:self.MAX_ITEMS]
 
 
 class WallstreetcnCollector(HttpCollector):
@@ -521,6 +669,13 @@ class WallstreetcnCollector(HttpCollector):
     SOURCE_NAME = "华尔街见闻"
     MAX_ITEMS = 15
     REFERER = "https://wallstreetcn.com/"
+
+    def fetch(self) -> list[NewsItem]:
+        """GFW/DNS 不通，保留代码备用"""
+        reason = "GFW/DNS 拦截，当前网络环境无法访问 wallstreetcn.com"
+        suggestion = "TODO: 如需启用，需配置代理（proxy）或切换 CDN 镜像"
+        logger.info(f"{self.SOURCE_NAME}: {reason}；{suggestion}")
+        return []
 
 
 class Kr36Collector(HttpCollector):
@@ -559,11 +714,12 @@ class CaixinCollector(HttpCollector):
 
 
 class ITHomeCollector(HttpCollector):
-    """IT之家 - 科技数码新闻"""
+    """IT之家 - 科技数码新闻（重写_fetch，避免CSS选择器异常）"""
     URL = "https://www.ithome.com/"
     SELECTORS = [
-        "li a[href*='ithome.com/0/']",
-        "ul li a[href*='/0/']",
+        # IT之家文章链接是完整URL（https://www.ithome.com/0/xxx/xxx.htm），
+        # 需要用完整域名匹配，而不是相对路径 /0/
+        "a[href*='ithome.com/0/']",
         ".lst li a",
         ".hot-list li a",
         "h3 a",
@@ -572,8 +728,46 @@ class ITHomeCollector(HttpCollector):
         ".list a",
     ]
     SOURCE_NAME = "IT之家"
-    MAX_ITEMS = 25  # IT之家新闻量大，多抓一些
+    MAX_ITEMS = 25
     REFERER = "https://www.ithome.com/"
+
+    def _fetch(self) -> list[NewsItem]:
+        """重写：先用简单选择器，失败时fallback到通用提取"""
+        try:
+            resp = self._get(self.URL, headers={"Referer": self.REFERER})
+            soup = _safe_parse_html(resp, force_encoding=self.FORCE_ENCODING)
+        except Exception as e:
+            logger.warning(f"{self.SOURCE_NAME}: 请求失败: {e}")
+            return []
+
+        items = []
+
+        # 1. 尝试硬编码选择器（捕获异常，单条失败不中断）
+        for selector in self.SELECTORS:
+            try:
+                elements = soup.select(selector)
+            except Exception:
+                continue
+            if not elements:
+                continue
+            for elem in elements[:self.MAX_ITEMS * 2]:
+                link = elem if elem.name == "a" else elem.find("a")
+                if not link:
+                    continue
+                title = link.get_text(strip=True)
+                href = link.get("href", "")
+                href = _fix_url(href, self.URL)
+                if title and href and self._validate_item(title, href):
+                    items.append(self._create_item(title, href, elem=link))
+            if items:
+                break
+
+        # 2. 通用 fallback
+        if not items:
+            items = self._generic_extract(soup)
+
+        logger.info(f"{self.SOURCE_NAME}: 抓取 {len(items)} 条")
+        return items[:self.MAX_ITEMS]
 
     # IT之家首页有大量非新闻的工具/下载链接，需要额外过滤
     EXCLUDE_KEYWORDS = {
@@ -590,10 +784,16 @@ class ITHomeCollector(HttpCollector):
         for kw in self.EXCLUDE_KEYWORDS:
             if kw in title:
                 return False
-        # 排除历史页面（编号小于800的一般是很老的常驻链接）
-        href_nums = re.findall(r'/(\d+)/\d+\.htm', href)
-        if href_nums and int(href_nums[0]) < 800:
-            return False
+        # 排除历史页面（编号小于500的一般是很老的常驻链接）
+        # IT之家 URL 格式：/0/960/211.htm，取第一组编号（目录编号）
+        href_nums = re.findall(r'/(\d+)/(\d+)\.htm', href)
+        if href_nums:
+            try:
+                mid_num = int(href_nums[0][0])  # 目录编号（第一组）
+                if mid_num < 500:
+                    return False
+            except (ValueError, IndexError):
+                pass
         return True
 
 
@@ -797,8 +997,11 @@ class JJCKBCollector(HttpCollector):
 
 
 class CSCollector(HttpCollector):
-    """中国证券报（中证网）- 证券权威资讯"""
-    URL = "http://www.cs.com.cn/"
+    """中国证券报（中证网）- 证券权威资讯
+    注意：http://www.cs.com.cn/ 会建立TCP连接但服务器不返回数据（永久超时）
+    改用 https://www.cs.com.cn/ 可正常返回200。
+    """
+    URL = "https://www.cs.com.cn/"
     SELECTORS = [
         "a[href*='detail_']",
         "h3 a",
@@ -811,7 +1014,7 @@ class CSCollector(HttpCollector):
     ]
     SOURCE_NAME = "中国证券报"
     MAX_ITEMS = 20
-    REFERER = "http://www.cs.com.cn/"
+    REFERER = "https://www.cs.com.cn/"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -885,18 +1088,25 @@ class CankaoCollector(HttpCollector):
     """参考消息 - 新华社国际资讯（整站纯JS渲染，requests无法采集，保留备用）
     TODO: 如需启用，需切换到浏览器自动化方案（playwright/selenium）
     """
-    URL = "http://www.cankaoxiaoxi.com/"
+    URL = "https://www.cankaoxiaoxi.com/"
     SOURCE_NAME = "参考消息"
     MAX_ITEMS = 15
 
     def fetch(self) -> list[NewsItem]:
-        """当前无法采集，返回空列表"""
-        logger.info(f"{self.SOURCE_NAME}: 整站JS渲染，requests无法采集，跳过")
+        """整站JS渲染，requests无法采集，保留代码备用"""
+        reason = "整站纯JS渲染（React SPA），requests只能拿到HTML骨架，无真实新闻链接"
+        suggestion = "TODO: 如需启用，需切换到浏览器自动化方案（playwright / selenium）"
+        logger.info(f"{self.SOURCE_NAME}: {reason}；{suggestion}")
         return []
 
 
 class HuanqiuCollector(HttpCollector):
-    """环球网 - 国际新闻/财经（替代参考消息）"""
+    """环球网 - 国际新闻/财经（替代参考消息）
+
+    world.huanqiu.com 是 JS SPA，HTML 骨架仅 ~13KB，
+    但 SSR 数据藏在 <textarea class="item-aid"> + <textarea class="item-title"> 中。
+    _fetch() 直接解析 textarea 结构，拼接文章 URL。
+    """
     URL = "https://world.huanqiu.com/"
     SELECTORS = [
         "h3 a",
@@ -927,6 +1137,80 @@ class HuanqiuCollector(HttpCollector):
             if ex in href:
                 return False
         return True
+
+    def _fetch(self) -> list[NewsItem]:
+        """解析 SSR textarea 结构提取新闻
+
+        HTML 骨架示例：
+          <div class="item">
+            <textarea class="item-aid">4Rpx94ZNhA0</textarea>
+            <textarea class="item-addltype">article</textarea>
+            <textarea class="item-title">标题文字</textarea>
+            <textarea class="item-cnf-host">world.huanqiu.com</textarea>
+          </div>
+
+        URL 拼接规则: https://{item-cnf-host}/article/{item-aid}
+        """
+        from bs4 import BeautifulSoup as BS  # 局部导入避免顶层开销
+
+        try:
+            resp = self._get(
+                self.URL,
+                headers={"Referer": self.REFERER},
+                timeout=15,
+            )
+            soup = _safe_parse_html(resp)
+        except Exception as e:
+            logger.debug(f"{self.SOURCE_NAME}: 请求失败: {e}")
+            return []
+
+        # 找所有包含 item-aid 的 div.item 容器
+        items: list[NewsItem] = []
+        seen_aids: set[str] = set()
+
+        containers = soup.find_all("div", class_="item")
+        if not containers:
+            # fallback：直接搜 textarea
+            logger.debug(f"{self.SOURCE_NAME}: 未找到 div.item 容器，尝试 fallback")
+            containers = soup.find_all("textarea", class_="item-aid")
+
+        for container in containers:
+            try:
+                # 从 container 内部找 textarea
+                aid_el = container.find("textarea", class_="item-aid")
+                title_el = container.find("textarea", class_="item-title")
+                host_el = container.find("textarea", class_="item-cnf-host")
+
+                if not aid_el or not title_el:
+                    continue
+
+                aid = aid_el.get_text(strip=True)
+                title = title_el.get_text(strip=True)
+                host = host_el.get_text(strip=True) if host_el else "world.huanqiu.com"
+
+                if not aid or not title or aid in seen_aids:
+                    continue
+
+                # 只取文章类型
+                type_el = container.find("textarea", class_="item-addltype")
+                if type_el and type_el.get_text(strip=True) != "article":
+                    continue
+
+                href = f"https://{host}/article/{aid}"
+
+                if not self._validate_item(title, href):
+                    continue
+
+                seen_aids.add(aid)
+                items.append(self._create_item(title, href))
+            except Exception:
+                continue
+
+            if len(items) >= self.MAX_ITEMS:
+                break
+
+        logger.info(f"{self.SOURCE_NAME}: textarea 解析到 {len(items)} 条")
+        return items
 
 
 # ==================== 入口函数 ====================

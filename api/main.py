@@ -5,8 +5,8 @@ FastAPI 主入口
 import asyncio
 import threading
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -20,31 +20,42 @@ from database.crud import (
 )
 from ai_analyst.analyzer import Analyzer
 from visualizer.generator import Visualizer
+from config.settings import settings
+from utils.error_handler import setup_exception_handlers, ErrorHandler, LLMException
 
-# 数据库实例（模块级别）
+
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.util import get_remote_address
+    from slowapi.errors import RateLimitExceeded
+
+    limiter = Limiter(key_func=get_remote_address, default_limits=[settings.api.rate_limit])
+    HAS_SLOWAPI = True
+except ImportError:
+    logger.warning("slowapi 未安装，API 频率限制功能不可用")
+    HAS_SLOWAPI = False
+
+
 db_instance = Database()
 
-# 每日报告路径（模块级别缓存）
+
 latest_daily_report_path: Path = None
 latest_daily_report_result = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时建表 + 自动运行日报分析"""
     db_instance.create_tables()
     logger.info("数据库表已初始化")
 
-    # 启动时自动运行每日分析（后台线程）
     def _run_daily_analysis():
         global latest_daily_report_path, latest_daily_report_result
         try:
             from daily_pipeline import run_daily_pipeline
             logger.info("启动时自动运行每日分析...")
-            report_path = run_daily_pipeline(theme="light")
+            report_path = run_daily_pipeline(theme=settings.api.daily_report_theme)
             if report_path:
                 latest_daily_report_path = report_path
-                # 同时读取结果供 API 使用
                 latest_daily_report_result = _load_latest_report(report_path)
                 logger.info("启动时每日分析完成")
         except Exception as e:
@@ -59,7 +70,6 @@ async def lifespan(app: FastAPI):
 
 
 def _load_latest_report(path: Path) -> dict:
-    """从报告路径推断基本信息"""
     return {
         "path": str(path),
         "filename": path.name,
@@ -67,7 +77,6 @@ def _load_latest_report(path: Path) -> dict:
     }
 
 
-# 初始化
 app = FastAPI(
     title="News-to-Stock AI Analyst API",
     description="AI 驱动的实时新闻股市分析工具 API - 自动抓取新闻、分析市场影响、生成日报图",
@@ -75,15 +84,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+if HAS_SLOWAPI:
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+setup_exception_handlers(app)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.api.cors_origins,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# 数据库依赖
+
 def get_db():
     db = db_instance.get_session()
     try:
@@ -96,7 +110,7 @@ def get_db():
 def read_root():
     return {
         "name": "News-to-Stock AI Analyst",
-        "version": "0.3.1",
+        "version": "0.4.0",
         "status": "running",
         "endpoints": {
             "GET  /api/news/latest": "获取最新新闻列表",
@@ -106,104 +120,132 @@ def read_root():
             "POST /api/daily-report": "手动触发每日分析（抓取+分析+生成图）",
             "GET  /api/daily-report": "获取最新每日报告",
             "GET  /api/daily-report/image": "查看最新每日报告图片",
+            "GET  /health": "健康检查",
             "GET  /docs": "API 文档（Swagger UI）",
         },
     }
 
 
-# ============ 原有单条新闻分析接口 ============
+@app.get("/health")
+def health_check():
+    try:
+        db = db_instance.get_session()
+        db.execute("SELECT 1")
+        db.close()
+        db_status = "healthy"
+    except Exception as e:
+        db_status = f"unhealthy: {str(e)[:50]}"
+
+    try:
+        from ai_analyst.llm_client import LLMClient
+        llm_status = "configured"
+    except Exception as e:
+        llm_status = f"error: {str(e)[:50]}"
+
+    return {
+        "status": "healthy",
+        "database": db_status,
+        "llm": llm_status,
+        "rate_limit": settings.api.rate_limit,
+        "timestamp": str(_load_latest_report(latest_daily_report_path) if latest_daily_report_path else "no report"),
+    }
+
 
 @app.get("/api/news/latest", response_model=list[schemas.NewsItemOut])
-def list_latest_news(limit: int = 20, db: Session = Depends(get_db)):
-    """获取最新新闻列表"""
+@limiter.limit("30/minute") if HAS_SLOWAPI else lambda x: x
+def list_latest_news(request: Request, limit: int = 20, db: Session = Depends(get_db)):
     return list_recent_news(db, limit=limit)
 
 
 @app.post("/api/analyze", response_model=schemas.AnalysisOut)
-def analyze_news(payload: schemas.AnalyzeRequest, db: Session = Depends(get_db)):
-    """提交新闻进行分析"""
-    # 检查是否已分析过
-    if payload.url:
-        existing = get_news_by_url(db, payload.url)
-        if existing:
-            analysis = get_analysis_by_news_id(db, existing.id)
-            if analysis:
-                return analysis
+@limiter.limit("10/minute") if HAS_SLOWAPI else lambda x: x
+def analyze_news(request: Request, payload: schemas.AnalyzeRequest, db: Session = Depends(get_db)):
+    try:
+        if payload.url:
+            existing = get_news_by_url(db, payload.url)
+            if existing:
+                analysis = get_analysis_by_news_id(db, existing.id)
+                if analysis:
+                    return analysis
 
-    # 创建新闻记录
-    news = create_news(
-        db=db,
-        title=payload.title,
-        summary=payload.content[:200],
-        content=payload.content,
-        source=payload.source or "手动提交",
-        url=payload.url or "",
-        published_at=payload.published_at,
-    )
+        news = create_news(
+            db=db,
+            title=payload.title,
+            summary=payload.content[:200],
+            content=payload.content,
+            source=payload.source or "手动提交",
+            url=payload.url or "",
+            published_at=payload.published_at,
+        )
 
-    # 调用 AI 分析
-    analyzer = Analyzer()
-    result = analyzer.analyze(
-        title=payload.title,
-        content=payload.content,
-        source=payload.source or "手动提交",
-        published_at=str(payload.published_at) if payload.published_at else "",
-    )
+        analyzer = Analyzer(
+            llm_provider=settings.llm.provider,
+            llm_model=settings.llm.model,
+        )
+        result = analyzer.analyze(
+            title=payload.title,
+            content=payload.content,
+            source=payload.source or "手动提交",
+            published_at=str(payload.published_at) if payload.published_at else "",
+        )
 
-    if not result:
-        raise HTTPException(status_code=500, detail="AI 分析失败")
+        if not result:
+            raise LLMException("AI 分析失败")
 
-    # 生成图片
-    viz = Visualizer()
-    image_path = viz.generate(
-        news_title=payload.title,
-        news_source=payload.source or "手动提交",
-        news_time=str(payload.published_at) if payload.published_at else "",
-        rating_score=result.rating,
-        analysis_summary=result.summary,
-        beneficiary_sectors=result.beneficiary_sectors,
-        recommended_stocks=result.recommended_stocks,
-        risks=result.risks,
-    )
+        viz = Visualizer(theme=settings.visualizer.theme)
+        image_path = viz.generate(
+            news_title=payload.title,
+            news_source=payload.source or "手动提交",
+            news_time=str(payload.published_at) if payload.published_at else "",
+            rating_score=result.rating,
+            analysis_summary=result.summary,
+            beneficiary_sectors=result.beneficiary_sectors,
+            recommended_stocks=result.recommended_stocks,
+            risks=result.risks,
+        )
 
-    # 保存分析结果
-    analysis = create_analysis(
-        db=db,
-        news_id=news.id,
-        rating=result.rating,
-        rating_label=result.rating_label,
-        summary=result.summary,
-        beneficiary_sectors=result.beneficiary_sectors,
-        recommended_stocks=result.recommended_stocks,
-        risks=result.risks,
-        time_horizon=result.time_horizon,
-        confidence=result.confidence,
-        image_path=str(image_path),
-    )
+        analysis = create_analysis(
+            db=db,
+            news_id=news.id,
+            rating=result.rating,
+            rating_label=result.rating_label,
+            summary=result.summary,
+            beneficiary_sectors=result.beneficiary_sectors,
+            recommended_stocks=result.recommended_stocks,
+            risks=result.risks,
+            time_horizon=result.time_horizon,
+            confidence=result.confidence,
+            image_path=str(image_path),
+        )
 
-    return {
-        "id": analysis.id,
-        "news_id": news.id,
-        "title": payload.title,
-        "rating": result.rating,
-        "rating_label": result.rating_label,
-        "summary": result.summary,
-        "beneficiary_sectors": result.beneficiary_sectors,
-        "recommended_stocks": result.recommended_stocks,
-        "risks": result.risks,
-        "image_path": str(image_path),
-    }
+        return {
+            "id": analysis.id,
+            "news_id": news.id,
+            "title": payload.title,
+            "rating": result.rating,
+            "rating_label": result.rating_label,
+            "summary": result.summary,
+            "beneficiary_sectors": result.beneficiary_sectors,
+            "recommended_stocks": result.recommended_stocks,
+            "risks": result.risks,
+            "image_path": str(image_path),
+        }
+    except LLMException:
+        raise
+    except Exception as e:
+        logger.error(f"分析接口异常: {e}")
+        raise HTTPException(status_code=500, detail=f"分析失败: {str(e)}")
 
 
 @app.get("/api/analysis/latest", response_model=list[schemas.AnalysisOut])
-def list_latest_analyses(limit: int = 20, db: Session = Depends(get_db)):
-    """获取最新分析结果列表"""
+@limiter.limit("30/minute") if HAS_SLOWAPI else lambda x: x
+def list_latest_analyses(request: Request, limit: int = 20, db: Session = Depends(get_db)):
     return list_recent_analyses(db, limit=limit)
 
 
 @app.get("/api/image/{analysis_id}")
-def get_analysis_image(analysis_id: int, db: Session = Depends(get_db)):
-    """获取分析图片（返回图片文件）"""
+@limiter.limit("60/minute") if HAS_SLOWAPI else lambda x: x
+def get_analysis_image(request: Request, analysis_id: int, db: Session = Depends(get_db)):
     result = get_analysis_with_news(db, analysis_id)
     if not result or not result.get("image_path"):
         raise HTTPException(status_code=404, detail="图片未找到")
@@ -213,15 +255,13 @@ def get_analysis_image(analysis_id: int, db: Session = Depends(get_db)):
     return FileResponse(path, media_type="image/png")
 
 
-# ============ 每日报告接口 ============
-
 @app.post("/api/daily-report")
-def trigger_daily_report():
-    """手动触发每日分析（抓取新闻→AI分析→生成日报图）"""
+@limiter.limit("5/hour") if HAS_SLOWAPI else lambda x: x
+def trigger_daily_report(request: Request):
     global latest_daily_report_path, latest_daily_report_result
     try:
         from daily_pipeline import run_daily_pipeline
-        report_path = run_daily_pipeline(theme="light")
+        report_path = run_daily_pipeline(theme=settings.api.daily_report_theme)
         if report_path:
             latest_daily_report_path = report_path
             latest_daily_report_result = _load_latest_report(report_path)
@@ -235,12 +275,12 @@ def trigger_daily_report():
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"每日报告触发异常: {e}")
         raise HTTPException(status_code=500, detail=f"分析出错: {str(e)}")
 
 
 @app.get("/api/daily-report")
 def get_daily_report():
-    """获取最新每日报告信息"""
     if not latest_daily_report_path:
         raise HTTPException(status_code=404, detail="暂无每日报告，请等待启动分析完成或手动触发 POST /api/daily-report")
     return {
@@ -251,8 +291,8 @@ def get_daily_report():
 
 
 @app.get("/api/daily-report/image")
-def get_daily_report_image():
-    """查看最新每日报告图片"""
+@limiter.limit("60/minute") if HAS_SLOWAPI else lambda x: x
+def get_daily_report_image(request: Request):
     if not latest_daily_report_path or not latest_daily_report_path.exists():
         raise HTTPException(status_code=404, detail="暂无每日报告图片")
     return FileResponse(latest_daily_report_path, media_type="image/png")

@@ -436,111 +436,36 @@ class EastmoneyCollector(HttpCollector):
 
 
 class HexunCollector(HttpCollector):
-    """和讯网 - 股票/财经新闻
-    news.hexun.com 首页有反爬JS（requests拿到混淆脚本），
-    改用 stock.hexun.com 和 finance.hexun.com 子频道（curl/requests均可正常访问）。
-    链接格式：https://stock.hexun.com/YYYY-MM-DD/XXXXXXXXXX.html
+    """每日经济新闻（nbd.com.cn）- 替代和讯网（整站WAF反爬）
+    每经是成都传媒集团旗下权威财经日报，覆盖A股、宏观、产业等
+    其首页是服务端渲染，requests可直接采集
     """
-    # 多个可正常访问的子频道 URL
-    CHANNEL_URLS = [
-        "https://stock.hexun.com/",    # 股票频道（可直接访问）
-        "https://finance.hexun.com/",  # 财经频道
-    ]
-    URL = "https://stock.hexun.com/"
+    URL = "https://www.nbd.com.cn/"
     SELECTORS = [
-        "li a[href*='.html']",
+        "a[href*='/articles/']",
         ".news-item a",
         ".item a",
         ".title a",
         "h3 a",
         "h2 a",
         ".list-item a",
+        "a[href*='.html']",
     ]
-    SOURCE_NAME = "和讯网"
+    SOURCE_NAME = "每日经济新闻"
     MAX_ITEMS = 20
-    REFERER = "https://www.hexun.com/"
-    FORCE_ENCODING = "gbk"  # 和讯网使用 GBK 编码
-
-    def fetch(self) -> list[NewsItem]:
-        """整站腾讯云 WAF 反爬，requests 无法绕过，保留代码备用"""
-        reason = "整站启用腾讯云 WAF 验证码（__TENCENT_CHAOS_VM），requests 均返回反爬 JS"
-        suggestion = "TODO: 如需启用，需切换到浏览器自动化方案（playwright / selenium）"
-        # 直接调 _fetch()，避开基类 fetch() 的重复日志
-        try:
-            items = self._fetch()
-        except Exception:
-            items = []
-        if not items:
-            logger.warning(f"{self.SOURCE_NAME}: 返回 0 条 —— {reason}；{suggestion}")
-        else:
-            logger.info(f"{self.SOURCE_NAME}: 抓取 {len(items)} 条（注意：部分网络环境下整站反爬，可能返回 0 条）")
-        return items
-
-    def _fetch(self) -> list[NewsItem]:
-        """从多个子频道聚合，跳过有反爬JS的主频道"""
-        all_items = []
-        seen_hrefs: set = set()
-        seen_titles: set = set()
-
-        for chan_url in self.CHANNEL_URLS:
-            try:
-                resp = self._get(chan_url, headers={"Referer": self.REFERER}, timeout=10)
-                soup = _safe_parse_html(resp, force_encoding=self.FORCE_ENCODING)
-            except Exception as e:
-                logger.debug(f"{self.SOURCE_NAME}: 频道 {chan_url} 请求失败: {e}")
-                continue
-
-            # 优先用精准选择器
-            found = []
-            for selector in self.SELECTORS:
-                try:
-                    elements = soup.select(selector)
-                except Exception:
-                    continue
-                if elements:
-                    for elem in elements[:self.MAX_ITEMS * 2]:
-                        link = elem if elem.name == "a" else elem.find("a")
-                        if not link:
-                            continue
-                        title = link.get_text(strip=True)
-                        href = link.get("href", "")
-                        href = _fix_url(href, chan_url)
-                        if (title and href
-                                and href not in seen_hrefs
-                                and self._validate_item(title, href)):
-                            seen_hrefs.add(href)
-                            seen_titles.add(title[:40])
-                            found.append(self._create_item(title, href, elem=link))
-                    if found:
-                        break
-
-            # fallback：通用提取
-            if not found:
-                for link in soup.find_all("a", href=True):
-                    href = _fix_url(link.get("href", ""), chan_url)
-                    title = link.get_text(strip=True)
-                    if (title and href
-                            and href not in seen_hrefs
-                            and self._validate_item(title, href)):
-                        seen_hrefs.add(href)
-                        found.append(self._create_item(title, href, elem=link))
-
-            all_items.extend(found)
-            if len(all_items) >= self.MAX_ITEMS:
-                break
-
-        logger.info(f"{self.SOURCE_NAME}: 抓取 {len(all_items)} 条")
-        return all_items[:self.MAX_ITEMS]
+    REFERER = "https://www.nbd.com.cn/"
 
     def _validate_item(self, title: str, href: str) -> bool:
-        """验证：必须是 hexun.com 子域下的日期型链接"""
         if not super()._validate_item(title, href):
             return False
-        # 只保留 hexun.com 域名
-        if "hexun.com" not in href:
+        if "nbd.com.cn" not in href:
             return False
-        # 排除导航/聚合页
-        for kw in ["index.html", "xjhyzx", "jrds", "dsfzf"]:
+        # 只保留文章详情页
+        if "/articles/" not in href and not re.search(r'/\d{4}/\d{2}/\d{2}/', href):
+            return False
+        # 排除非新闻页
+        for kw in ["/video/", "/photo/", "/live/", "/topic/", "/special/",
+                   "index.html", "#", "/app/"]:
             if kw in href:
                 return False
         return True
@@ -655,27 +580,35 @@ class CailiansheCollector(HttpCollector):
 
 
 class WallstreetcnCollector(HttpCollector):
-    """华尔街见闻（GFW/DNS 不通，保留代码备用；需代理或CDN访问）"""
-    URL = "https://wallstreetcn.com/news/global"
+    """界面新闻（jiemian.com）- 替代华尔街见闻（GFW不可达）
+    界面新闻是上海报业集团旗下财经媒体，覆盖A股、宏观、产业等
+    """
+    URL = "https://www.jiemian.com/"
     SELECTORS = [
-        ".article-item a",
-        ".news-item a",
+        ".news-view a",
         ".item a",
-        "h2 a",
         "h3 a",
-        ".article-card a",
+        "h2 a",
+        ".title a",
+        ".news-item a",
+        "a[href*='/article/']",
         ".list-item a",
     ]
-    SOURCE_NAME = "华尔街见闻"
-    MAX_ITEMS = 15
-    REFERER = "https://wallstreetcn.com/"
+    SOURCE_NAME = "界面新闻"
+    MAX_ITEMS = 20
+    REFERER = "https://www.jiemian.com/"
 
-    def fetch(self) -> list[NewsItem]:
-        """GFW/DNS 不通，保留代码备用"""
-        reason = "GFW/DNS 拦截，当前网络环境无法访问 wallstreetcn.com"
-        suggestion = "TODO: 如需启用，需配置代理（proxy）或切换 CDN 镜像"
-        logger.info(f"{self.SOURCE_NAME}: {reason}；{suggestion}")
-        return []
+    def _validate_item(self, title: str, href: str) -> bool:
+        if not super()._validate_item(title, href):
+            return False
+        if "jiemian.com" not in href:
+            return False
+        # 排除非新闻页
+        for kw in ["/video/", "/photo/", "/live/", "/topic/", "/special/",
+                   "/m.jiemian.com", "index.html", "#"]:
+            if kw in href:
+                return False
+        return True
 
 
 class Kr36Collector(HttpCollector):
@@ -713,87 +646,80 @@ class CaixinCollector(HttpCollector):
     REFERER = "https://china.caixin.com/"
 
 
-class ITHomeCollector(HttpCollector):
-    """IT之家 - 科技数码新闻（重写_fetch，避免CSS选择器异常）"""
-    URL = "https://www.ithome.com/"
+class Jingji21Collector(HttpCollector):
+    """21世纪经济报道 - 南方财经全媒体集团旗下权威财经媒体
+    URL模式：https://www.21jingji.com/article/YYYYMMDD/...
+    注意：需强制UTF-8编码，否则中文乱码
+    """
+    URL = "https://www.21jingji.com/"
     SELECTORS = [
-        # IT之家文章链接是完整URL（https://www.ithome.com/0/xxx/xxx.htm），
-        # 需要用完整域名匹配，而不是相对路径 /0/
-        "a[href*='ithome.com/0/']",
-        ".lst li a",
-        ".hot-list li a",
+        "a[href*='/article/']",
+        ".news-list a",
+        ".list-item a",
+        ".item a",
+        ".title a",
         "h3 a",
         "h2 a",
-        ".title a",
-        ".list a",
+        "ul li a",
     ]
-    SOURCE_NAME = "IT之家"
-    MAX_ITEMS = 25
-    REFERER = "https://www.ithome.com/"
-
-    def _fetch(self) -> list[NewsItem]:
-        """重写：先用简单选择器，失败时fallback到通用提取"""
-        try:
-            resp = self._get(self.URL, headers={"Referer": self.REFERER})
-            soup = _safe_parse_html(resp, force_encoding=self.FORCE_ENCODING)
-        except Exception as e:
-            logger.warning(f"{self.SOURCE_NAME}: 请求失败: {e}")
-            return []
-
-        items = []
-
-        # 1. 尝试硬编码选择器（捕获异常，单条失败不中断）
-        for selector in self.SELECTORS:
-            try:
-                elements = soup.select(selector)
-            except Exception:
-                continue
-            if not elements:
-                continue
-            for elem in elements[:self.MAX_ITEMS * 2]:
-                link = elem if elem.name == "a" else elem.find("a")
-                if not link:
-                    continue
-                title = link.get_text(strip=True)
-                href = link.get("href", "")
-                href = _fix_url(href, self.URL)
-                if title and href and self._validate_item(title, href):
-                    items.append(self._create_item(title, href, elem=link))
-            if items:
-                break
-
-        # 2. 通用 fallback
-        if not items:
-            items = self._generic_extract(soup)
-
-        logger.info(f"{self.SOURCE_NAME}: 抓取 {len(items)} 条")
-        return items[:self.MAX_ITEMS]
-
-    # IT之家首页有大量非新闻的工具/下载链接，需要额外过滤
-    EXCLUDE_KEYWORDS = {
-        "下载", "镜像", "描述文件", "壁纸", "主题", "字体",
-        "插件", "扩展", "驱动", "工具", "教程", "设置",
-        "立即下载", "点击下载", "免费下载",
-    }
+    SOURCE_NAME = "21世纪经济报道"
+    MAX_ITEMS = 20
+    REFERER = "https://www.21jingji.com/"
+    FORCE_ENCODING = "utf-8"  # 21世纪经济报道需强制UTF-8
 
     def _validate_item(self, title: str, href: str) -> bool:
-        """重写验证，排除IT之家特有的非新闻链接"""
         if not super()._validate_item(title, href):
             return False
-        # 排除站内工具/下载页
-        for kw in self.EXCLUDE_KEYWORDS:
-            if kw in title:
+        if "21jingji.com" not in href:
+            return False
+        # 只保留文章详情页
+        if "/article/" not in href and not re.search(r'/\d{8}/', href):
+            return False
+        # 排除非新闻页
+        for kw in ["/video/", "/photo/", "/live/", "/topic/", "/special/",
+                   "index.html", "#", "/app/", "/column/"]:
+            if kw in href:
                 return False
-        # 排除历史页面（编号小于500的一般是很老的常驻链接）
-        # IT之家 URL 格式：/0/960/211.htm，取第一组编号（目录编号）
-        href_nums = re.findall(r'/(\d+)/(\d+)\.htm', href)
-        if href_nums:
-            try:
-                mid_num = int(href_nums[0][0])  # 目录编号（第一组）
-                if mid_num < 500:
-                    return False
-            except (ValueError, IndexError):
-                pass
+        return True
+
+
+class NeteaseMoneyCollector(HttpCollector):
+    """网易财经 - 老牌门户财经频道
+    URL模式：https://www.163.com/dy/article/XXX.html 或 https://www.163.com/money/article/XXX.html
+    """
+    URL = "https://money.163.com/"
+    SELECTORS = [
+        "a[href*='/article/']",
+        ".topnews a",
+        ".news-item a",
+        ".item a",
+        ".title a",
+        "h3 a",
+        "h2 a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "网易财经"
+    MAX_ITEMS = 20
+    REFERER = "https://money.163.com/"
+    FORCE_ENCODING = "utf-8"
+
+    def _validate_item(self, title: str, href: str) -> bool:
+        if not super()._validate_item(title, href):
+            return False
+        if "163.com" not in href:
+            return False
+        # 只保留网易文章链接
+        if "/article/" not in href:
+            return False
+        # 排除非财经板块
+        allowed_paths = ["/money/", "/dy/", "/stock/", "/finance/"]
+        if not any(p in href for p in allowed_paths):
+            return False
+        # 排除非新闻页
+        for kw in ["/video/", "/photo/", "/live/", "/topic/", "/special/",
+                   "index.html", "#", "/download/"]:
+            if kw in href:
+                return False
         return True
 
 
@@ -1085,19 +1011,41 @@ class BanyuetanCollector(HttpCollector):
 
 
 class CankaoCollector(HttpCollector):
-    """参考消息 - 新华社国际资讯（整站纯JS渲染，requests无法采集，保留备用）
-    TODO: 如需启用，需切换到浏览器自动化方案（playwright/selenium）
+    """澎湃新闻（thepaper.cn）- 替代参考消息（整站JS渲染不可采集）
+    澎湃新闻是上海报业集团旗下权威时政/财经媒体，专注原创深度报道
+    其首页是服务端渲染，requests可直接采集
     """
-    URL = "https://www.cankaoxiaoxi.com/"
-    SOURCE_NAME = "参考消息"
-    MAX_ITEMS = 15
+    URL = "https://www.thepaper.cn/"
+    SELECTORS = [
+        "a[href*='newsDetail_forward']",
+        ".news_txt a",
+        ".news_title a",
+        "h3 a",
+        "h2 a",
+        ".title a",
+        ".item a",
+        ".list-item a",
+    ]
+    SOURCE_NAME = "澎湃新闻"
+    MAX_ITEMS = 20
+    REFERER = "https://www.thepaper.cn/"
 
-    def fetch(self) -> list[NewsItem]:
-        """整站JS渲染，requests无法采集，保留代码备用"""
-        reason = "整站纯JS渲染（React SPA），requests只能拿到HTML骨架，无真实新闻链接"
-        suggestion = "TODO: 如需启用，需切换到浏览器自动化方案（playwright / selenium）"
-        logger.info(f"{self.SOURCE_NAME}: {reason}；{suggestion}")
-        return []
+    def _validate_item(self, title: str, href: str) -> bool:
+        if not super()._validate_item(title, href):
+            return False
+        if "thepaper.cn" not in href:
+            return False
+        # 只取新闻详情页
+        if "newsDetail_forward" not in href and "newsDetail_" not in href:
+            # 也允许有日期路径的链接
+            if not re.search(r'/\d{8}/', href):
+                return False
+        # 排除非新闻页
+        for kw in ["/video/", "/photo/", "/live/", "/baike/", "/ask/",
+                   "index.html", "#", "/download/"]:
+            if kw in href:
+                return False
+        return True
 
 
 class HuanqiuCollector(HttpCollector):
@@ -1220,13 +1168,14 @@ def get_all_collectors() -> list[BaseCollector]:
     return [
         SinaFinanceCollector(),       # 新浪财经
         EastmoneyCollector(),         # 东方财富
-        HexunCollector(),             # 和讯网
+        HexunCollector(),             # 每日经济新闻（替代和讯网）
         YicaiCollector(),             # 第一财经
         STCNCollector(),              # 证券时报
         CailiansheCollector(),         # 财联社
         Kr36Collector(),              # 36氪
         CaixinCollector(),            # 财新网
-        ITHomeCollector(),            # IT之家
+        Jingji21Collector(),          # 21世纪经济报道（v0.3.2新增）
+        NeteaseMoneyCollector(),      # 网易财经（v0.3.2新增）
         PeopleCollector(),            # 人民网（v0.3.0新增）
         XinhuaCollector(),            # 新华网·财经（v0.3.0新增）
         GovCollector(),               # 国务院网（v0.3.0新增）
@@ -1234,7 +1183,7 @@ def get_all_collectors() -> list[BaseCollector]:
         CSCollector(),                # 中国证券报（v0.3.0新增）
         CNStockCollector(),           # 上海证券报（v0.3.0新增）
         BanyuetanCollector(),         # 半月谈（v0.3.0新增）
-        CankaoCollector(),            # 参考消息（JS渲染，暂不可用，保留备用）
+        CankaoCollector(),            # 澎湃新闻（替代参考消息）
         HuanqiuCollector(),           # 环球网（v0.3.1新增，替代参考消息）
-        WallstreetcnCollector(),      # 华尔街见闻（GFW，需代理）
+        WallstreetcnCollector(),      # 界面新闻（替代华尔街见闻）
     ]

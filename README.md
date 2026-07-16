@@ -42,8 +42,8 @@ chmod +x start.sh
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/459504669/News-to-Stock-AI-Analyst.git
-cd News-to-Stock-AI-Analyst
+git clone https://github.com/459504669/新闻抓取AI分析.git
+cd 新闻抓取AI分析
 
 # 2. 创建虚拟环境
 python -m venv venv
@@ -91,7 +91,7 @@ DEFAULT_LLM_MODEL=qwen-max
 ## 🏗️ 项目架构
 
 ```
-News-to-Stock-AI-Analyst/
+新闻抓取AI分析/
 ├── news_collector/          # 新闻采集模块
 │   ├── collectors/          # 各媒体采集器
 │   ├── deduplicator.py     # 新闻去重器

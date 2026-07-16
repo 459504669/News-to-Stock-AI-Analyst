@@ -350,7 +350,7 @@ def test_fastapi_app():
 
 
 if __name__ == "__main__":
-    print("\n" + "🚀 News-to-Stock-AI-Analyst 综合测试".center(60, "="))
+    print("\n" + "🚀 新闻抓取AI分析 综合测试".center(60, "="))
     print()
 
     try:
